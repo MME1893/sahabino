@@ -1,0 +1,75 @@
+[project]
+name = "sahabino"
+version = "0.1.0"
+description = "Application intelligence and network analytics data pipeline"
+readme = "README.md"
+authors = [
+    { name = "Mohammad", email = "133509735+MME1893@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-settings>=2.15.0",
+    "structlog>=26.1.0",
+]
+
+[project.scripts]
+sahabino = "sahabino:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.6",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "SIM",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sahabino"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+source = ["sahabino"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+pretty = true

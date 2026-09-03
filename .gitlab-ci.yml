@@ -1,0 +1,28 @@
+stages:
+  - quality
+  - test
+
+default:
+  image: python:3.12-slim
+
+variables:
+  UV_CACHE_DIR: .uv-cache
+
+cache:
+  paths:
+    - .uv-cache/
+
+before_script:
+  - pip install uv
+  - uv sync --frozen
+
+lint:
+  stage: quality
+  script:
+    - uv run ruff check .
+    - uv run ruff format --check .
+
+test:
+  stage: test
+  script:
+    - uv run pytest
