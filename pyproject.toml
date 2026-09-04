@@ -8,8 +8,12 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "alembic",
+    "fastapi",
     "pydantic-settings>=2.15.0",
-    "structlog>=26.1.0",
+    "psycopg[binary]>=3,<4",
+    "sqlalchemy[asyncio]>=2,<3",
+    "uvicorn",
 ]
 
 [project.scripts]
@@ -21,11 +25,13 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "httpx",
     "mypy>=2.3.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
-    "pytest-cov>=7.1.0",
+    "pytest-asyncio",
     "ruff>=0.16.6",
+    "testcontainers[postgres]",
 ]
 
 [tool.ruff]
@@ -58,15 +64,6 @@ addopts = [
     "--strict-config",
 ]
 pythonpath = ["src"]
-
-[tool.coverage.run]
-branch = true
-source = ["sahabino"]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = true
-fail_under = 80
 
 [tool.mypy]
 python_version = "3.12"
