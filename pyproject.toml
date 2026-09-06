@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "alembic",
+    "confluent-kafka",
     "fastapi",
     "pydantic-settings>=2.15.0",
     "psycopg[binary]>=3,<4",
@@ -31,7 +32,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio",
     "ruff>=0.16.6",
-    "testcontainers[postgres]",
+    "testcontainers[kafka,postgres]",
 ]
 
 [tool.ruff]
@@ -70,3 +71,7 @@ python_version = "3.12"
 strict = true
 warn_unused_configs = true
 pretty = true
+
+[[tool.mypy.overrides]]
+module = ["confluent_kafka", "confluent_kafka.*"]
+ignore_missing_imports = true
