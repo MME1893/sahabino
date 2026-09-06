@@ -129,6 +129,7 @@ Before opening a Pull Request, also verify:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
+uv run mypy src
 uv run pytest
 ```
 
@@ -146,10 +147,10 @@ Schema and reference-data changes belong in Alembic migrations. The application 
 
 ## Integration Tests
 
-Integration tests use `TEST_DATABASE_URL` when it is set. Otherwise, they start `postgres:16-alpine` automatically with Testcontainers, so a running Docker daemon is required for local integration tests:
+PostgreSQL integration tests use `TEST_DATABASE_URL` when it is set. Otherwise, they start `postgres:16-alpine` automatically with Testcontainers, so a running Docker daemon is required for local integration tests:
 
 ```bash
-uv run pytest
+uv run pytest tests/integration/app_registry
 ```
 
 `TEST_DATABASE_URL` must point to a disposable test database. Integration tests apply migrations and clear application-related tables between tests, so it must never point to a development, staging, or production database containing data that needs to be preserved.
@@ -158,9 +159,30 @@ In GitHub Actions, the CI workflow starts a temporary PostgreSQL service and pro
 
 The GitHub Actions PostgreSQL service exists only for the duration of the CI job and is separate from local development and production databases.
 
+Kafka integration tests follow the same external-service-first pattern. Set `TEST_KAFKA_BOOTSTRAP_SERVERS` to use an existing disposable broker, or leave it unset to start the pinned Testcontainers Kafka image in KRaft mode:
+
+```bash
+docker compose up -d kafka
+TEST_KAFKA_BOOTSTRAP_SERVERS=localhost:9092 uv run pytest tests/integration/kafka
+```
+
+The Kafka suite creates and removes only its own uniquely named test topics. It
+also verifies that a synchronous offset commit is honored by a replacement
+consumer using the same group ID.
+
+The GitHub Actions test job provides its own Apache Kafka service through `TEST_KAFKA_BOOTSTRAP_SERVERS`, so it does not start a Kafka Testcontainer. Kafka tests explicitly create isolated topics and do not rely on automatic topic creation.
+
+Compose and CI use `apache/kafka:4.3.1`, while the Python Testcontainers Kafka helper uses the pinned `confluentinc/cp-kafka:7.6.0` fallback. Both provide the standard Kafka behavior under test. We intentionally avoid maintaining a custom `GenericContainer` only to force matching image names and should revisit the difference when Testcontainers Python supports the Apache image directly.
+
+Run both isolated integration subsystems with:
+
+```bash
+uv run pytest tests/integration
+```
+
 ## Container Validation
 
-The GitHub Actions test workflow does not use `docker-compose.yml` to run the test suite. Docker Compose remains the local development environment for running the application and PostgreSQL together.
+The GitHub Actions test workflow does not use `docker-compose.yml` to run the test suite. Docker Compose remains the local development environment for running the application, PostgreSQL, and Kafka together.
 
 Before submitting container or Compose changes, validate the Compose configuration:
 

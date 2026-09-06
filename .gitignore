@@ -44,3 +44,6 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# this is just for my own usage in my own system, nothing more !
+zip-project.ps1
