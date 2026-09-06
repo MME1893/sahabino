@@ -19,7 +19,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 from sahabino.common.config import get_settings
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 POSTGRES_IMAGE = "postgres:16-alpine"
 
 
@@ -43,8 +43,8 @@ def _run_migrations(database_url: str) -> None:
     command.upgrade(config, "head")
 
 
-# added because of windows problem
 def _selector_loop_factory() -> asyncio.AbstractEventLoop:
+    """Create the selector loop required by Psycopg integration tests on Windows."""
     return asyncio.SelectorEventLoop(selectors.SelectSelector())
 
 
@@ -88,27 +88,6 @@ def clean_applications(database_url: str) -> Iterator[None]:
     _clear_applications(database_url)
     yield
     _clear_applications(database_url)
-
-
-# @pytest.fixture(scope="session")
-# def api_client(database_url: str) -> Iterator[TestClient]:
-#     from sahabino.db.session import get_session
-#     from sahabino.main import create_app
-
-#     test_engine = create_async_engine(database_url, pool_pre_ping=True)
-#     test_session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
-
-#     async def override_get_session() -> AsyncIterator[AsyncSession]:
-#         async with test_session_factory() as session:
-#             yield session
-
-#     application = create_app()
-#     application.dependency_overrides[get_session] = override_get_session
-#     try:
-#         with TestClient(application) as client:
-#             yield client
-#     finally:
-#         asyncio.run(test_engine.dispose())
 
 
 @pytest.fixture(scope="session")
