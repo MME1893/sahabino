@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -29,14 +30,17 @@ class ApplicationRepository:
         return list(result)
 
     async def get_application(self, application_id: UUID) -> Application | None:
-        return await self._session.scalar(
-            select(Application)
-            .where(Application.id == application_id)
-            .options(
-                selectinload(Application.category_assignments).joinedload(
-                    ApplicationCategory.category
+        return cast(
+            Application | None,
+            await self._session.scalar(
+                select(Application)
+                .where(Application.id == application_id)
+                .options(
+                    selectinload(Application.category_assignments).joinedload(
+                        ApplicationCategory.category
+                    )
                 )
-            )
+            ),
         )
 
     async def list_applications(self, active: bool | None) -> list[Application]:
