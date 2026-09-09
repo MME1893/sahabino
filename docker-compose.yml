@@ -72,6 +72,38 @@ services:
       postgres:
         condition: service_healthy
 
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  crawler:
+    build:
+      context: .
+
+    command: ["uv", "run", "--no-sync", "python", "-m", "sahabino.crawler", "scheduler"]
+
+    environment:
+      SAHABINO_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      SAHABINO_KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
+      SAHABINO_APPLICATION_REGISTRY_BASE_URL: "http://api:8000"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   kafka_data:
