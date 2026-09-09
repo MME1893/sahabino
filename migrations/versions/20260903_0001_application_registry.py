@@ -45,7 +45,7 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "(is_active IS TRUE AND deactivated_at IS NULL) OR "
             "(is_active IS FALSE AND deactivated_at IS NOT NULL)",
-            name="ck_applications_active_deactivation",
+            name="active_deactivation",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_applications"),
         sa.UniqueConstraint(
