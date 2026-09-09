@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from sahabino.app_registry import models as registry_models
 from sahabino.common.config import get_settings
+from sahabino.crawler.infrastructure.persistence import models as crawler_models
 from sahabino.db.base import Base
 
 config = context.config
@@ -19,6 +20,7 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 _ = registry_models
+_ = crawler_models
 
 
 def run_migrations_offline() -> None:
