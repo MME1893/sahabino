@@ -9,6 +9,7 @@ from sahabino.crawler.domain.errors import (
     NetworkTimeout,
     ProxyAuthenticationFailure,
     ProxyConnectionFailure,
+    RateLimited,
     TemporaryConnectionFailure,
 )
 
@@ -53,7 +54,7 @@ class NetworkPolicy:
                 GatewayFailure,
             ),
         )
-        if isinstance(error, ProxyConnectionFailure):
+        if isinstance(error, RateLimited):
             identity = lease.proxy_id or "direct"
             with self._lock:
                 count = self._rate_limits.get(identity, 0) + 1
