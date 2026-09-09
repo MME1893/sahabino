@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import inspect
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import parse_qs
 
 import pytest
 
 from sahabino.crawler.application.ports.transport import TransportResponse
-from sahabino.crawler.domain.errors import RateLimited, SchemaFailure
+from sahabino.crawler.domain.errors import ParseFailure, RateLimited, SchemaFailure
 from sahabino.crawler.infrastructure.adapters import google_play as google_play_module
+from sahabino.crawler.infrastructure.adapters import gplay as gplay_module
 from sahabino.crawler.infrastructure.adapters.google_play import GooglePlayScraperAdapter
-from sahabino.crawler.infrastructure.adapters.gplay import GPlayScraperAdapter
+from sahabino.crawler.infrastructure.adapters.gplay import (
+    GPlayScraperAdapter,
+    decode_gplay_review_response,
+)
 from sahabino.crawler.infrastructure.transport.controlled_gplay import ControlledGPlayHttpClient
 
 NOW = datetime(2026, 9, 6, 10, 30, tzinfo=UTC)
@@ -153,6 +159,117 @@ def test_both_adapters_reduce_source_updates_to_calendar_dates() -> None:
     assert secondary.store_updated_on == datetime.fromtimestamp(UPDATE_TIMESTAMP, UTC).date()
 
 
+def test_primary_app_parser_non_mapping_is_parse_failure() -> None:
+    class NonMappingParser:
+        def parse_app_data(self, *_: object) -> object:
+            return None
+
+    adapter = _primary_adapter()
+    adapter._app_parser_type = NonMappingParser  # type: ignore[attr-defined]
+
+    with pytest.raises(ParseFailure, match="no details"):
+        adapter.get_app("com.example.app", "en", "us")
+
+
+@pytest.mark.parametrize("dataset", [None, {}, {"reviews": None}, {"reviews": "invalid"}])
+def test_primary_rejects_invalid_reviews_dataset(dataset: object) -> None:
+    class InvalidReviewsScraper:
+        def scrape_reviews_data(self, *_: object) -> object:
+            return dataset
+
+    adapter = _primary_adapter()
+    adapter._reviews_scraper_type = InvalidReviewsScraper  # type: ignore[attr-defined]
+    adapter._reviews_scraper = InvalidReviewsScraper()  # type: ignore[attr-defined]
+
+    with pytest.raises(ParseFailure, match="invalid response set"):
+        adapter.get_reviews("com.example.app", "en", "us", 10)
+
+
+def test_primary_review_decoder_requires_response_marker() -> None:
+    with pytest.raises(ParseFailure, match="marker"):
+        decode_gplay_review_response("unmarked response")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        ")]}'\n\n{",
+        ")]}'\n\n" + json.dumps([[None, None, "{"]]),
+    ],
+)
+def test_primary_review_decoder_exposes_raw_json_errors_for_classifier(response: str) -> None:
+    with pytest.raises(json.JSONDecodeError):
+        decode_gplay_review_response(response)
+
+
+@pytest.mark.parametrize("timestamp", [None, datetime(2026, 9, 6, 12)])
+def test_primary_review_normalization_rejects_missing_or_naive_timestamp(
+    timestamp: object,
+) -> None:
+    adapter = _primary_adapter()
+    raw = {
+        "reviewId": "review-1",
+        "userName": "Ada",
+        "score": 5,
+        "content": "ok",
+        "at": timestamp,
+        "thumbsUpCount": 0,
+    }
+
+    with pytest.raises(SchemaFailure, match="timezone-aware"):
+        adapter._normalize_review(raw, 1, NOW)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_primary_review_limit_must_be_positive(limit: int) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        _primary_adapter().get_reviews("com.example.app", "en", "us", limit)
+
+
+def test_primary_review_limit_is_capped_at_100() -> None:
+    captured_counts: list[int] = []
+
+    class CapturingReviewsScraper:
+        def scrape_reviews_data(
+            self,
+            _package: str,
+            count: int,
+            *_: object,
+        ) -> dict[str, list[str]]:
+            captured_counts.append(count)
+            return {"reviews": []}
+
+    adapter = _primary_adapter()
+    adapter._reviews_scraper_type = CapturingReviewsScraper  # type: ignore[attr-defined]
+    adapter._reviews_scraper = CapturingReviewsScraper()  # type: ignore[attr-defined]
+
+    result = adapter.get_reviews("com.example.app", "en", "us", 500)
+
+    assert captured_counts == [100]
+    assert result.reviews == ()
+
+
+def test_primary_empty_reviews_are_a_successful_empty_dto() -> None:
+    class EmptyReviewsScraper:
+        def scrape_reviews_data(self, *_: object) -> dict[str, list[str]]:
+            return {"reviews": []}
+
+    adapter = _primary_adapter()
+    adapter._reviews_scraper_type = EmptyReviewsScraper  # type: ignore[attr-defined]
+    adapter._reviews_scraper = EmptyReviewsScraper()  # type: ignore[attr-defined]
+
+    assert adapter.get_reviews("com.example.app", "en", "us", 10).reviews == ()
+
+
+def test_primary_adapter_rejects_unpinned_gplay_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gplay_module, "version", lambda _: "9.9.9")
+
+    with pytest.raises(RuntimeError, match="gplay-scraper==1.0.6"):
+        GPlayScraperAdapter(FakeControlledClient())  # type: ignore[arg-type]
+
+
 def test_secondary_rejects_naive_review_timestamp_instead_of_using_local_timezone() -> None:
     adapter = GooglePlayScraperAdapter(
         app_fetcher=lambda **_: {},
@@ -194,6 +311,162 @@ def test_secondary_stops_at_100_and_does_not_expose_continuation() -> None:
     assert normalized.reviews[-1].position == 100
 
 
+def test_secondary_uses_last_updated_on_when_updated_is_absent() -> None:
+    adapter = GooglePlayScraperAdapter(
+        app_fetcher=lambda **_: {
+            "minInstalls": 1,
+            "score": 4,
+            "ratings": 1,
+            "reviews": 1,
+            "lastUpdatedOn": "Sep 05, 2026",
+            "version": "1",
+        },
+        review_fetcher=lambda **_: [],
+        now=lambda: NOW,
+    )
+
+    result = adapter.get_app("com.example.app", "en", "us")
+
+    assert result.store_updated_on == date(2026, 9, 5)
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        (REVIEW_TIMESTAMP, datetime.fromtimestamp(REVIEW_TIMESTAMP, UTC)),
+        (float(REVIEW_TIMESTAMP), datetime.fromtimestamp(REVIEW_TIMESTAMP, UTC)),
+        ("2026-09-05T10:00:00Z", datetime(2026, 9, 5, 10, tzinfo=UTC)),
+        (
+            datetime.fromisoformat("2026-09-05T13:30:00+03:30"),
+            datetime(2026, 9, 5, 10, tzinfo=UTC),
+        ),
+    ],
+)
+def test_secondary_review_timestamp_normalization_matrix(
+    timestamp: object,
+    expected: datetime,
+) -> None:
+    adapter = GooglePlayScraperAdapter(
+        app_fetcher=lambda **_: {},
+        review_fetcher=lambda **_: [
+            {
+                "reviewId": "r",
+                "userName": "Ada",
+                "score": 5,
+                "content": "ok",
+                "at": timestamp,
+                "thumbsUpCount": 0,
+            }
+        ],
+        now=lambda: NOW,
+    )
+
+    result = adapter.get_reviews("com.example.app", "en", "us", 1)
+
+    assert result.reviews[0].source_at == expected
+    assert result.reviews[0].source_at.tzinfo is UTC
+
+
+@pytest.mark.parametrize("timestamp", [None, datetime(2026, 9, 5, 10)])
+def test_secondary_rejects_missing_or_naive_review_timestamps(timestamp: object) -> None:
+    adapter = GooglePlayScraperAdapter(
+        app_fetcher=lambda **_: {},
+        review_fetcher=lambda **_: [
+            {
+                "reviewId": "r",
+                "userName": "Ada",
+                "score": 5,
+                "content": "ok",
+                "at": timestamp,
+                "thumbsUpCount": 0,
+            }
+        ],
+    )
+
+    with pytest.raises(SchemaFailure):
+        adapter.get_reviews("com.example.app", "en", "us", 1)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_secondary_review_limit_must_be_positive(limit: int) -> None:
+    adapter = GooglePlayScraperAdapter(app_fetcher=lambda **_: {}, review_fetcher=lambda **_: [])
+
+    with pytest.raises(ValueError, match="positive"):
+        adapter.get_reviews("com.example.app", "en", "us", limit)
+
+
+def test_secondary_caps_requested_review_count_before_fetching() -> None:
+    counts: list[int] = []
+
+    def fetch_reviews(**kwargs: object) -> list[dict[str, Any]]:
+        counts.append(int(kwargs["count"]))
+        return []
+
+    adapter = GooglePlayScraperAdapter(
+        app_fetcher=lambda **_: {},
+        review_fetcher=fetch_reviews,
+    )
+
+    adapter.get_reviews("com.example.app", "en", "us", 101)
+
+    assert counts == [100]
+
+
+def test_secondary_missing_ad_supported_defaults_to_false() -> None:
+    adapter = GooglePlayScraperAdapter(
+        app_fetcher=lambda **_: {
+            "minInstalls": 1,
+            "score": 4,
+            "ratings": 1,
+            "reviews": 1,
+        },
+        review_fetcher=lambda **_: [],
+        now=lambda: NOW,
+    )
+
+    assert adapter.get_app("com.example.app", "en", "us").ad_supported is False
+
+
+def test_secondary_wrapper_has_no_cross_request_state_under_concurrent_calls() -> None:
+    def fetch_app(**kwargs: object) -> dict[str, object]:
+        return {
+            "minInstalls": 1,
+            "score": 4,
+            "ratings": 1,
+            "reviews": 1,
+            "version": str(kwargs["app_id"]),
+        }
+
+    def fetch_reviews(**kwargs: object) -> list[dict[str, object]]:
+        return [
+            {
+                "reviewId": str(kwargs["app_id"]),
+                "userName": "Ada",
+                "score": 5,
+                "content": "ok",
+                "at": NOW,
+                "thumbsUpCount": 0,
+            }
+        ]
+
+    adapter = GooglePlayScraperAdapter(
+        app_fetcher=fetch_app,
+        review_fetcher=fetch_reviews,
+        now=lambda: NOW,
+    )
+    packages = [f"com.example.app{index}" for index in range(20)]
+
+    def fetch(package: str) -> tuple[str | None, str]:
+        app = adapter.get_app(package, "en", "us")
+        review = adapter.get_reviews(package, "en", "us", 1).reviews[0]
+        return app.version, review.external_review_id
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(fetch, packages))
+
+    assert results == [(package, package) for package in packages]
+
+
 class FakeTransport:
     def __init__(self, responses: list[TransportResponse | Exception]) -> None:
         self.responses = responses
@@ -228,16 +501,59 @@ def test_controlled_client_preserves_app_and_review_requests() -> None:
     client = _controlled(transport)
 
     assert client.fetch_app_page("com.example.app", "en", "us") == "app"
-    assert client.fetch_reviews_batch("com.example.app", "en", "us", 2, 100) == "reviews"
+    assert (
+        client.fetch_reviews_batch("com.example.app", "en", "us", 2, 37, "next-page") == "reviews"
+    )
 
     assert transport.calls[0][0] == "GET"
+    assert transport.calls[0][1] == "https://play.google.test/store/apps/details"
+    assert transport.calls[0][2]["headers"] == {"user-agent": "test"}
     assert transport.calls[0][2]["params"] == {
         "id": "com.example.app",
         "hl": "en",
         "gl": "us",
     }
     assert transport.calls[1][0] == "POST"
-    assert "f.req=" in transport.calls[1][2]["data"]
+    assert transport.calls[1][1] == ("https://play.google.test/_/PlayStoreUi/data/batchexecute")
+    assert transport.calls[1][2]["params"] == {"hl": "en", "gl": "us"}
+    assert transport.calls[1][2]["headers"]["content-type"] == ("application/x-www-form-urlencoded")
+
+    form = parse_qs(transport.calls[1][2]["data"])
+    assert "f.req" in form
+    rpc = json.loads(form["f.req"][0])[0][0]
+    assert rpc[0] == "oCPfdb"
+    nested = json.loads(rpc[1])
+    assert nested[2][0] == "com.example.app"
+    assert nested[1][1] == 2
+    assert nested[1][2] == [37, None, "next-page"]
+
+
+def test_controlled_client_app_request_without_locale_sends_only_id() -> None:
+    transport = FakeTransport([TransportResponse(200, "app", {})])
+    client = _controlled(transport)
+
+    assert client.fetch_app_page_no_locale("com.example.app") == "app"
+
+    assert transport.calls == [
+        (
+            "GET",
+            "https://play.google.test/store/apps/details",
+            {
+                "headers": {"user-agent": "test"},
+                "data": None,
+                "params": {"id": "com.example.app"},
+            },
+        )
+    ]
+
+
+def test_controlled_client_empty_headers_fall_back_to_defaults() -> None:
+    transport = FakeTransport([TransportResponse(200, "ok", {})])
+    client = _controlled(transport)
+
+    client._request("GET", "https://play.google.test/custom", headers={})
+
+    assert transport.calls[0][2]["headers"] == {"user-agent": "test"}
 
 
 def test_controlled_client_does_not_hide_failure_with_backend_fallback() -> None:

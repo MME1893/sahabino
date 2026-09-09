@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -15,6 +15,7 @@ from sahabino.crawler.domain.results import (
     CrawlTaskType,
     TriggerType,
 )
+from sahabino.crawler.infrastructure.persistence import repository as repository_module
 from sahabino.crawler.infrastructure.persistence.models import CrawlRun, CrawlTask
 from sahabino.crawler.infrastructure.persistence.repository import (
     SqlAlchemyLifecycleRepository,
@@ -174,3 +175,135 @@ def test_uncommitted_repository_transaction_rolls_back(
 
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(CrawlRun)) == 0
+
+
+def _persisted_task(
+    database_url: str,
+) -> tuple[SqlAlchemyLifecycleRepository, object, UUID]:
+    application = _application(database_url)
+    session_factory = create_sync_session_factory(database_url)
+    repository = SqlAlchemyLifecycleRepository(session_factory)
+    with repository.transaction() as transaction:
+        run_id = transaction.create_run(TriggerType.MANUAL)
+        task_ids = transaction.create_tasks(run_id, [application], "en", "us")
+        transaction.commit()
+    task_id = task_ids[(application.application_id, CrawlTaskType.APP_DETAILS)]
+    return repository, session_factory, task_id
+
+
+@pytest.mark.parametrize(
+    ("initial", "operation", "expected"),
+    [
+        (CrawlTaskStatus.PENDING, "begin", CrawlTaskStatus.RUNNING),
+        (CrawlTaskStatus.RETRYING, "begin", CrawlTaskStatus.RUNNING),
+        (CrawlTaskStatus.RUNNING, "retry", CrawlTaskStatus.RETRYING),
+        (CrawlTaskStatus.RUNNING, "succeed", CrawlTaskStatus.SUCCEEDED),
+        (CrawlTaskStatus.PENDING, "fail", CrawlTaskStatus.FAILED),
+        (CrawlTaskStatus.RUNNING, "fail", CrawlTaskStatus.FAILED),
+        (CrawlTaskStatus.RETRYING, "fail", CrawlTaskStatus.FAILED),
+    ],
+)
+def test_legal_task_state_transitions(
+    crawler_database_url: str,
+    initial: CrawlTaskStatus,
+    operation: str,
+    expected: CrawlTaskStatus,
+) -> None:
+    repository, session_factory, task_id = _persisted_task(crawler_database_url)
+    with session_factory() as session:  # type: ignore[operator]
+        task = session.get(CrawlTask, task_id)
+        assert task is not None
+        task.status = initial.value
+        session.commit()
+
+    with repository.transaction() as transaction:
+        if operation == "begin":
+            transaction.begin_attempt(task_id)
+        elif operation == "retry":
+            transaction.mark_retrying(task_id)
+        elif operation == "succeed":
+            transaction.mark_task_succeeded(task_id)
+        else:
+            transaction.mark_task_failed(task_id, "TEST", "failure")
+        transaction.commit()
+
+    with session_factory() as session:  # type: ignore[operator]
+        task = session.get(CrawlTask, task_id)
+        assert task is not None
+        assert task.status == expected.value
+
+
+@pytest.mark.parametrize(
+    ("initial", "operation"),
+    [
+        (CrawlTaskStatus.RUNNING, "begin"),
+        (CrawlTaskStatus.SUCCEEDED, "begin"),
+        (CrawlTaskStatus.FAILED, "begin"),
+        (CrawlTaskStatus.PENDING, "retry"),
+        (CrawlTaskStatus.SUCCEEDED, "retry"),
+        (CrawlTaskStatus.FAILED, "retry"),
+        (CrawlTaskStatus.PENDING, "succeed"),
+        (CrawlTaskStatus.SUCCEEDED, "fail"),
+        (CrawlTaskStatus.FAILED, "fail"),
+    ],
+)
+def test_illegal_task_state_transitions_raise_value_error(
+    crawler_database_url: str,
+    initial: CrawlTaskStatus,
+    operation: str,
+) -> None:
+    repository, session_factory, task_id = _persisted_task(crawler_database_url)
+    with session_factory() as session:  # type: ignore[operator]
+        task = session.get(CrawlTask, task_id)
+        assert task is not None
+        task.status = initial.value
+        session.commit()
+
+    with pytest.raises(ValueError, match="cannot"), repository.transaction() as transaction:
+        if operation == "begin":
+            transaction.begin_attempt(task_id)
+        elif operation == "retry":
+            transaction.mark_retrying(task_id)
+        elif operation == "succeed":
+            transaction.mark_task_succeeded(task_id)
+        else:
+            transaction.mark_task_failed(task_id, "TEST", "failure")
+
+
+def test_retry_attempt_count_increments_without_replacing_original_started_at(
+    crawler_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, session_factory, task_id = _persisted_task(crawler_database_url)
+    current = [datetime(2026, 9, 6, 10, tzinfo=UTC)]
+    monkeypatch.setattr(repository_module, "_now", lambda: current[0])
+
+    with repository.transaction() as transaction:
+        transaction.begin_attempt(task_id)
+        transaction.mark_retrying(task_id)
+        transaction.commit()
+    current[0] = datetime(2026, 9, 6, 11, tzinfo=UTC)
+    with repository.transaction() as transaction:
+        transaction.begin_attempt(task_id)
+        transaction.commit()
+
+    with session_factory() as session:  # type: ignore[operator]
+        task = session.get(CrawlTask, task_id)
+        assert task is not None
+        assert task.attempt_count == 2
+        assert task.started_at == datetime(2026, 9, 6, 10, tzinfo=UTC)
+
+
+def test_task_error_message_is_truncated_to_500_characters(
+    crawler_database_url: str,
+) -> None:
+    repository, session_factory, task_id = _persisted_task(crawler_database_url)
+
+    with repository.transaction() as transaction:
+        transaction.mark_task_failed(task_id, "TEST", "x" * 600)
+        transaction.commit()
+
+    with session_factory() as session:  # type: ignore[operator]
+        task = session.get(CrawlTask, task_id)
+        assert task is not None
+        assert task.error_message == "x" * 500

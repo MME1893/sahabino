@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -9,6 +10,7 @@ from sahabino.crawler.application.policies.adapter import AdapterFallbackPolicy
 from sahabino.crawler.application.policies.network import NetworkPolicy
 from sahabino.crawler.domain.errors import (
     AccessForbidden,
+    AdapterFailure,
     AppGone,
     AppNotFound,
     ClientRequestFailure,
@@ -20,8 +22,12 @@ from sahabino.crawler.domain.errors import (
     ProxyConnectionFailure,
     ProxyUnavailable,
     RateLimited,
+    TemporaryConnectionFailure,
     UpstreamFailure,
 )
+from sahabino.crawler.infrastructure.adapters import factory as factory_module
+from sahabino.crawler.infrastructure.adapters.classifier import ErrorClassifier
+from sahabino.crawler.infrastructure.adapters.factory import PrimaryAdapterFactory
 from sahabino.crawler.infrastructure.proxy.models import (
     NetworkContext,
     ProxyLease,
@@ -65,6 +71,7 @@ class FakeSession:
         self.responses = responses
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.closed = False
+        self.close_calls = 0
 
     def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.requests.append((method, url, kwargs))
@@ -74,7 +81,21 @@ class FakeSession:
         return response
 
     def close(self) -> None:
+        self.close_calls += 1
         self.closed = True
+
+
+class SecretCheckingSession(FakeSession):
+    def __init__(self, responses: list[FakeResponse | Exception], expected_proxy: str) -> None:
+        super().__init__(responses)
+        self._expected_proxy = expected_proxy
+        self.proxy_matched = False
+
+    def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+        self.proxy_matched = kwargs.get("proxy") == self._expected_proxy
+        if "proxy" in kwargs:
+            kwargs["proxy"] = "[redacted proxy]"
+        return super().request(method, url, **kwargs)
 
 
 def _pool(
@@ -103,6 +124,57 @@ def test_no_proxy_and_static_proxy_providers() -> None:
     assert "secret" not in repr(static)
 
 
+def test_no_proxy_provider_reuses_one_active_direct_lease_per_context() -> None:
+    provider = NoProxyProvider()
+
+    first = provider.acquire("app")
+    second = provider.acquire("app")
+
+    assert first is second
+    assert first.is_direct is True
+
+
+def test_no_proxy_provider_release_then_acquire_creates_a_new_direct_lease() -> None:
+    provider = NoProxyProvider()
+    first = provider.acquire("app")
+
+    provider.release(first)
+    second = provider.acquire("app")
+
+    assert first.released is True
+    assert second is not first
+    assert second.released is False
+    assert second.is_direct is True
+
+
+def test_no_proxy_provider_rotation_releases_and_replaces_direct_lease() -> None:
+    provider = NoProxyProvider()
+    first = provider.acquire("app")
+
+    second = provider.rotate(first, "app")
+
+    assert first.released is True
+    assert second is not first
+    assert second.is_direct is True
+    assert provider.is_usable(second) is True
+
+
+def test_no_proxy_provider_concurrent_same_context_acquire_is_sticky() -> None:
+    provider = NoProxyProvider()
+    callers = 16
+    barrier = Barrier(callers)
+
+    def acquire() -> ProxyLease:
+        barrier.wait()
+        return provider.acquire("shared-app")
+
+    with ThreadPoolExecutor(max_workers=callers) as executor:
+        leases = list(executor.map(lambda _: acquire(), range(callers)))
+
+    assert all(lease is leases[0] for lease in leases)
+    assert leases[0].released is False
+
+
 def test_pool_selection_sticky_release_failure_cooldown_and_rotation() -> None:
     clock = FakeClock()
     pool = _pool(["http://one", "http://two"], clock=clock)
@@ -123,6 +195,34 @@ def test_pool_selection_sticky_release_failure_cooldown_and_rotation() -> None:
     clock.advance(10)
     recovered = pool.acquire("another")
     assert recovered.proxy_id == "proxy-1"
+
+
+def test_proxy_pool_same_context_lease_has_single_owner_lifecycle_semantics() -> None:
+    """Characterize the one-application-context invariant: overlapping owners share a lease."""
+    pool = _pool(["http://one", "http://two"])
+    consumer_a = pool.acquire("app")
+    consumer_b = pool.acquire("app")
+
+    pool.release(consumer_a)
+
+    assert consumer_b is consumer_a
+    assert consumer_b.released is True
+    replacement = pool.acquire("app")
+    assert replacement is not consumer_b
+    assert replacement.released is False
+
+
+def test_proxy_pool_failed_rotation_is_destructive_and_does_not_restore_old_lease() -> None:
+    pool = _pool(["http://one"], direct=False)
+    old_lease = pool.acquire("app")
+
+    with pytest.raises(ProxyUnavailable):
+        pool.rotate(old_lease, "app")
+
+    assert old_lease.released is True
+    replacement = pool.acquire("app")
+    assert replacement is not old_lease
+    assert replacement.proxy_id == old_lease.proxy_id
 
 
 def test_disabled_and_unhealthy_proxies_are_excluded() -> None:
@@ -172,6 +272,43 @@ def test_rate_limit_rotation_is_threshold_based() -> None:
     assert rotated is not lease
     assert lease.endpoint is not None
     assert lease.endpoint.state == ProxyState.COOLDOWN
+
+
+def test_rate_limit_counter_is_cleared_by_success_before_threshold() -> None:
+    provider = PoolProxyProvider(_pool(["http://one", "http://two"], threshold=2))
+    policy = NetworkPolicy(provider, rate_limit_rotate_after=2)
+    lease = provider.acquire("app")
+
+    assert policy.handle_failure(RateLimited("first"), lease, "app") is lease
+    policy.record_success(lease)
+    assert policy.handle_failure(RateLimited("after success"), lease, "app") is lease
+    rotated = policy.handle_failure(RateLimited("threshold"), lease, "app")
+
+    assert rotated is not lease
+
+
+def test_direct_rate_limit_identity_is_cleared_by_success() -> None:
+    provider = NoProxyProvider()
+    policy = NetworkPolicy(provider, rate_limit_rotate_after=2)
+    lease = provider.acquire("app")
+
+    policy.handle_failure(RateLimited("first"), lease, "app")
+    policy.record_success(lease)
+    policy.handle_failure(RateLimited("after success"), lease, "app")
+
+    assert policy._rate_limits == {"direct": 1}  # type: ignore[attr-defined]
+
+
+def test_rate_limit_does_not_increment_generic_proxy_failure_accounting() -> None:
+    provider = PoolProxyProvider(_pool(["http://one", "http://two"], threshold=1))
+    policy = NetworkPolicy(provider, rate_limit_rotate_after=2)
+    lease = provider.acquire("app")
+
+    policy.handle_failure(RateLimited("first"), lease, "app")
+
+    assert lease.endpoint is not None
+    assert lease.endpoint.failure_count == 0
+    assert lease.endpoint.state == ProxyState.HEALTHY
 
 
 def test_access_forbidden_cools_proxy_and_rotation_is_operation_bounded() -> None:
@@ -358,7 +495,9 @@ def test_each_failed_physical_attempt_consumes_a_new_token_and_is_not_refunded()
 def test_transport_applies_proxy_timeout_headers_body_and_closes() -> None:
     pool = _pool(["http://user:secret@proxy.test:8080"])
     lease = pool.acquire("app")
-    session = FakeSession([FakeResponse(200)])
+    proxy_url = lease.secret_url()
+    assert proxy_url is not None
+    session = SecretCheckingSession([FakeResponse(200)], proxy_url)
     transport = CurlCffiTransport(
         NetworkContext("app", lease),
         CountingLimiter(),
@@ -380,5 +519,134 @@ def test_transport_applies_proxy_timeout_headers_body_and_closes() -> None:
     assert kwargs["headers"] == {"x-test": "yes"}
     assert kwargs["data"] == "body"
     assert kwargs["params"] == {"hl": "en"}
-    assert kwargs["proxy"].endswith("@proxy.test:8080")
+    assert "proxy" in kwargs
+    assert session.proxy_matched is True
     assert session.closed is True
+
+
+@pytest.mark.parametrize(
+    ("proxied", "error", "expected_type"),
+    [
+        (False, TimeoutError("deadline"), NetworkTimeout),
+        (True, RuntimeError("connect failed"), ProxyConnectionFailure),
+        (True, RuntimeError("resolve failed"), ProxyConnectionFailure),
+        (False, RuntimeError("connect failed"), TemporaryConnectionFailure),
+        (False, RuntimeError("network failed"), TemporaryConnectionFailure),
+        (False, RuntimeError("ordinary transport failure"), TemporaryConnectionFailure),
+    ],
+)
+def test_transport_exception_translation_matrix(
+    proxied: bool,
+    error: Exception,
+    expected_type: type[Exception],
+) -> None:
+    lease = _pool(["http://proxy.test:8080"]).acquire("app") if proxied else ProxyLease("app")
+    transport = CurlCffiTransport(
+        NetworkContext("app", lease),
+        CountingLimiter(),
+        timeout_seconds=20,
+        session_factory=lambda: FakeSession([error]),
+    )
+
+    with pytest.raises(expected_type):
+        transport.request("GET", "https://play.google.test")
+
+
+def test_proxy_timeout_taxonomy_is_characterized_at_both_boundaries() -> None:
+    lease = _pool(["http://proxy.test:8080"]).acquire("app")
+    transport = CurlCffiTransport(
+        NetworkContext("app", lease),
+        CountingLimiter(),
+        timeout_seconds=20,
+        session_factory=lambda: FakeSession([RuntimeError("proxy timeout")]),
+    )
+
+    with pytest.raises(NetworkTimeout):
+        transport.request("GET", "https://play.google.test")
+
+    assert isinstance(
+        ErrorClassifier().classify(RuntimeError("proxy timeout")), ProxyConnectionFailure
+    )
+
+
+def test_direct_transport_does_not_pass_a_proxy_argument() -> None:
+    session = FakeSession([FakeResponse(200)])
+    transport = CurlCffiTransport(
+        NetworkContext("direct", ProxyLease("direct")),
+        CountingLimiter(),
+        timeout_seconds=20,
+        session_factory=lambda: session,
+    )
+
+    transport.request("GET", "https://play.google.test")
+
+    assert "proxy" not in session.requests[0][2]
+
+
+def test_transport_close_is_idempotent_and_requests_after_close_fail() -> None:
+    session = FakeSession([FakeResponse(200)])
+    transport = CurlCffiTransport(
+        NetworkContext("app", ProxyLease("app")),
+        CountingLimiter(),
+        timeout_seconds=20,
+        session_factory=lambda: session,
+    )
+
+    transport.close()
+    transport.close()
+
+    assert session.close_calls == 1
+    with pytest.raises(AdapterFailure, match="closed"):
+        transport.request("GET", "https://play.google.test")
+    assert session.requests == []
+
+
+def test_transport_preserves_existing_crawler_error_instance() -> None:
+    original = RateLimited("already classified", retry_after_seconds=12)
+    transport = CurlCffiTransport(
+        NetworkContext("app", ProxyLease("app")),
+        CountingLimiter(),
+        timeout_seconds=20,
+        session_factory=lambda: FakeSession([original]),
+    )
+
+    with pytest.raises(RateLimited) as captured:
+        transport.request("GET", "https://play.google.test")
+
+    assert captured.value is original
+
+
+def test_rebuilt_primary_transports_share_one_global_limiter_after_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = CountingLimiter()
+    captured_limiters: list[object] = []
+
+    class RecordingTransport:
+        def __init__(
+            self,
+            _context: NetworkContext,
+            actual_limiter: object,
+            *,
+            timeout_seconds: float,
+        ) -> None:
+            assert timeout_seconds == 20
+            captured_limiters.append(actual_limiter)
+
+    class RecordingClient:
+        @classmethod
+        def from_gplay_config(cls, transport: object) -> object:
+            return transport
+
+    monkeypatch.setattr(factory_module, "ControlledGPlayHttpClient", RecordingClient)
+    monkeypatch.setattr(factory_module, "GPlayScraperAdapter", lambda client: client)
+    factory = PrimaryAdapterFactory(
+        limiter,
+        timeout_seconds=20,
+        transport_factory=RecordingTransport,  # type: ignore[arg-type]
+    )
+
+    factory.create("app", ProxyLease("app"))
+    factory.create("app", ProxyLease("app"))
+
+    assert captured_limiters == [limiter, limiter]

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
+from json import JSONDecodeError
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
-from sahabino.crawler.application.client import ResilientPlayStoreClient
+from sahabino.crawler.application.client import OperationHooks, ResilientPlayStoreClient
 from sahabino.crawler.application.policies.adapter import AdapterFallbackPolicy
 from sahabino.crawler.application.policies.network import NetworkPolicy
 from sahabino.crawler.application.policies.retry import RetryPolicy
@@ -22,12 +24,14 @@ from sahabino.crawler.domain.dto import (
 from sahabino.crawler.domain.errors import (
     AccessForbidden,
     AppNotFound,
+    CrawlerError,
     LocalRateLimitWaitExceeded,
     MessagingPublishFailure,
     NetworkTimeout,
     ParseFailure,
     ProxyAuthenticationFailure,
     RateLimited,
+    SchemaFailure,
     UpstreamFailure,
 )
 from sahabino.crawler.domain.results import CrawlTaskStatus, CrawlTaskType
@@ -114,11 +118,50 @@ class FakeFactory:
         self.adapter = adapter
         self.direct_values: list[bool] = []
         self.proxy_ids: list[str | None] = []
+        self.leases: list[object] = []
 
     def create(self, _context_id: str, lease: object) -> FakeAdapter:
         self.direct_values.append(bool(lease.is_direct))
         self.proxy_ids.append(lease.proxy_id)
+        self.leases.append(lease)
         return self.adapter
+
+
+class SequenceFactory:
+    def __init__(self, adapters: list[FakeAdapter]) -> None:
+        self.adapters = adapters
+        self.created: list[FakeAdapter] = []
+        self.leases: list[object] = []
+
+    def create(self, _context_id: str, lease: object) -> FakeAdapter:
+        adapter = self.adapters.pop(0)
+        self.created.append(adapter)
+        self.leases.append(lease)
+        return adapter
+
+
+class RecordingCircuit:
+    def __init__(self) -> None:
+        self.failures: list[tuple[CrawlerError, bool]] = []
+        self.successes = 0
+
+    def before_call(self) -> int:
+        return 0
+
+    def record_failure(
+        self,
+        error: BaseException,
+        *,
+        proxied: bool = False,
+        call_token: int | None = None,
+    ) -> None:
+        assert call_token == 0
+        assert isinstance(error, CrawlerError)
+        self.failures.append((error, proxied))
+
+    def record_success(self, *, call_token: int | None = None) -> None:
+        assert call_token == 0
+        self.successes += 1
 
 
 class MemoryLifecycle:
@@ -183,6 +226,7 @@ def _command(
     provider: object | None = None,
     circuit: CircuitBreaker | None = None,
     retry_attempts: int = 3,
+    secondary_enabled: bool = True,
 ) -> tuple[ApplicationCrawlCommand, MemoryLifecycle, FakeFactory, FakeAdapter]:
     task_ids = {
         CrawlTaskType.APP_DETAILS: uuid4(),
@@ -202,7 +246,7 @@ def _command(
         secondary_adapter=secondary,
         retry_policy=RetryPolicy(retry_attempts, 30, clock=clock, random_value=lambda: 0),
         network_policy=NetworkPolicy(actual_provider, rate_limit_rotate_after=2),  # type: ignore[arg-type]
-        fallback_policy=AdapterFallbackPolicy(),
+        fallback_policy=AdapterFallbackPolicy(secondary_enabled=secondary_enabled),
         circuit_breaker=circuit or CircuitBreaker(5, 60, clock=clock),
         classifier=ErrorClassifier(),
     )
@@ -222,6 +266,238 @@ def _execute(command: ApplicationCrawlCommand) -> None:
         ApplicationRef(uuid4(), "Example", "com.example.app"),
         command.task_ids,  # type: ignore[attr-defined]
     )
+
+
+def _playstore_client(
+    factory: object,
+    *,
+    provider: object | None = None,
+    secondary: FakeAdapter | None = None,
+    retry_attempts: int = 3,
+    secondary_enabled: bool = True,
+    circuit: object | None = None,
+) -> ResilientPlayStoreClient:
+    actual_provider = provider or NoProxyProvider()
+    clock = FakeClock()
+    return ResilientPlayStoreClient(
+        proxy_provider=actual_provider,  # type: ignore[arg-type]
+        primary_factory=factory,  # type: ignore[arg-type]
+        secondary_adapter=secondary or FakeAdapter(),
+        retry_policy=RetryPolicy(retry_attempts, 30, clock=clock, random_value=lambda: 0),
+        network_policy=NetworkPolicy(actual_provider, rate_limit_rotate_after=2),  # type: ignore[arg-type]
+        fallback_policy=AdapterFallbackPolicy(secondary_enabled=secondary_enabled),
+        circuit_breaker=circuit or CircuitBreaker(5, 60, clock=clock),  # type: ignore[arg-type]
+        classifier=ErrorClassifier(),
+    )
+
+
+def test_application_context_reuses_primary_adapter_and_lease_across_operations() -> None:
+    provider = NoProxyProvider()
+    primary = FakeAdapter()
+    factory = FakeFactory(primary)
+
+    with _playstore_client(factory, provider=provider).open_application("app") as client:
+        assert client.get_app("com.example.app", "en", "us") == details()
+        assert client.get_reviews("com.example.app", "en", "us", 10) == reviews()
+        lease = factory.leases[0]
+        assert lease.released is False
+
+    assert len(factory.leases) == 1
+    assert primary.app_calls == 1
+    assert primary.review_calls == 1
+    assert primary.closed is True
+    assert lease.released is True
+
+
+def test_application_rotation_closes_old_adapter_and_builds_new_one_for_new_lease() -> None:
+    provider = PoolProxyProvider(
+        ProxyPool(
+            ["http://one", "http://two"],
+            failure_threshold=1,
+            cooldown_seconds=10,
+            direct_fallback=False,
+            clock=FakeClock(),
+        )
+    )
+    old_adapter = FakeAdapter(app_outcomes=[AccessForbidden("403", retry_with_new_egress=True)])
+    new_adapter = FakeAdapter(app_outcomes=[details()])
+    factory = SequenceFactory([old_adapter, new_adapter])
+
+    with _playstore_client(
+        factory,
+        provider=provider,
+        retry_attempts=2,
+    ).open_application("app") as client:
+        assert client.get_app("com.example.app", "en", "us") == details()
+
+    assert factory.created == [old_adapter, new_adapter]
+    assert factory.leases[0] is not factory.leases[1]
+    assert factory.leases[0].released is True
+    assert old_adapter.closed is True
+    assert old_adapter.app_calls == 1
+    assert new_adapter.app_calls == 1
+    assert new_adapter.closed is True
+
+
+def test_application_cleanup_releases_lease_even_when_primary_close_raises() -> None:
+    class CloseFailureAdapter(FakeAdapter):
+        def close(self) -> None:
+            self.closed = True
+            raise RuntimeError("adapter close failed")
+
+    provider = NoProxyProvider()
+    primary = CloseFailureAdapter()
+    factory = FakeFactory(primary)
+
+    with (
+        pytest.raises(RuntimeError, match="adapter close failed"),
+        _playstore_client(factory, provider=provider).open_application("app") as client,
+    ):
+        client.get_app("com.example.app", "en", "us")
+
+    assert primary.closed is True
+    assert len(factory.leases) == 1
+    assert factory.leases[0].released is True
+    replacement = provider.acquire("app")
+    assert replacement is not factory.leases[0]
+    provider.release(replacement)
+
+
+def test_secondary_disabled_propagates_original_parse_failure_without_retry() -> None:
+    original = ParseFailure("primary parse failed")
+    primary = FakeAdapter(app_outcomes=[original])
+    secondary = FakeAdapter()
+    factory = FakeFactory(primary)
+    attempts: list[int] = []
+    retries: list[BaseException] = []
+
+    with (
+        _playstore_client(
+            factory,
+            secondary=secondary,
+            secondary_enabled=False,
+        ).open_application("app") as client,
+        pytest.raises(ParseFailure) as captured,
+    ):
+        client.get_app(
+            "com.example.app",
+            "en",
+            "us",
+            hooks=OperationHooks(attempts.append, retries.append),
+        )
+
+    assert captured.value is original
+    assert attempts == [1]
+    assert retries == []
+    assert secondary.app_calls == 0
+
+
+def test_secondary_disabled_is_persisted_as_one_failed_task_attempt() -> None:
+    secondary = FakeAdapter()
+    command, lifecycle, _, _ = _command(
+        FakeAdapter(app_outcomes=[ParseFailure("parse")]),
+        secondary=secondary,
+        secondary_enabled=False,
+    )
+
+    _execute(command)
+
+    task_id = command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
+    assert lifecycle.tasks[task_id]["attempts"] == 1
+    assert lifecycle.tasks[task_id]["status"] == CrawlTaskStatus.FAILED
+    assert lifecycle.tasks[task_id]["error"][0] == "PARSE_FAILURE"
+    assert secondary.app_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_type"),
+    [("rate-limit", RateLimited), ("schema", SchemaFailure)],
+)
+def test_secondary_failure_is_classified_once_without_retry_or_recursive_fallback(
+    failure_kind: str,
+    expected_type: type[CrawlerError],
+) -> None:
+    if failure_kind == "rate-limit":
+        raw_secondary_error: Exception = type(
+            "RateLimitError",
+            (RuntimeError,),
+            {},
+        )("secondary throttled")
+    else:
+        with pytest.raises(ValidationError) as captured:
+            AppDetailsDTO.model_validate({})
+        raw_secondary_error = captured.value
+    secondary = FakeAdapter(app_outcomes=[raw_secondary_error])
+    circuit = RecordingCircuit()
+    command, lifecycle, factory, _ = _command(
+        FakeAdapter(app_outcomes=[ParseFailure("primary parse")]),
+        secondary=secondary,
+        circuit=circuit,  # type: ignore[arg-type]
+    )
+
+    _execute(command)
+
+    task_id = command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
+    task = lifecycle.tasks[task_id]
+    assert task["attempts"] == 2
+    assert task["status"] == CrawlTaskStatus.FAILED
+    assert task["error"][0] == expected_type.code
+    assert secondary.app_calls == 1
+    assert len(factory.leases) == 1
+    assert isinstance(circuit.failures[-1][0], expected_type)
+    assert circuit.failures[-1][1] is False
+
+
+def test_known_adapter_bug_uses_secondary_but_unknown_runtime_failure_does_not() -> None:
+    secondary = FakeAdapter(app_outcomes=[details("secondary")])
+    command, lifecycle, _, _ = _command(
+        FakeAdapter(app_outcomes=[IndexError("library shape changed")]),
+        secondary=secondary,
+    )
+
+    _execute(command)
+
+    task_id = command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
+    assert lifecycle.tasks[task_id]["status"] == CrawlTaskStatus.SUCCEEDED
+    assert lifecycle.tasks[task_id]["attempts"] == 2
+    assert secondary.app_calls == 1
+
+    unknown_secondary = FakeAdapter()
+    unknown_command, unknown_lifecycle, _, _ = _command(
+        FakeAdapter(app_outcomes=[RuntimeError("opaque library failure")]),
+        secondary=unknown_secondary,
+    )
+
+    _execute(unknown_command)
+
+    unknown_id = unknown_command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
+    assert unknown_lifecycle.tasks[unknown_id]["status"] == CrawlTaskStatus.FAILED
+    assert unknown_lifecycle.tasks[unknown_id]["attempts"] == 1
+    assert unknown_lifecycle.tasks[unknown_id]["error"][0] == "CRAWLER_ERROR"
+    assert unknown_secondary.app_calls == 0
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        JSONDecodeError("malformed outer JSON", "{", 1),
+        JSONDecodeError("malformed inner JSON", "{", 1),
+    ],
+    ids=["outer", "inner"],
+)
+def test_malformed_adapter_json_is_parse_failure_at_application_boundary(
+    raw: JSONDecodeError,
+) -> None:
+    factory = FakeFactory(FakeAdapter(app_outcomes=[raw]))
+
+    with (
+        _playstore_client(
+            factory,
+            secondary_enabled=False,
+        ).open_application("app") as client,
+        pytest.raises(ParseFailure),
+    ):
+        client.get_app("com.example.app", "en", "us")
 
 
 def test_details_and_reviews_succeed_independently() -> None:
