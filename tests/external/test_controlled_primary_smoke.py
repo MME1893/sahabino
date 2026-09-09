@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 
 import pytest
+from pydantic import SecretStr
 
 from sahabino.crawler.infrastructure.adapters.factory import PrimaryAdapterFactory
-from sahabino.crawler.infrastructure.proxy.models import ProxyLease
+from sahabino.crawler.infrastructure.proxy.models import ProxyEndpoint, ProxyLease
 from sahabino.crawler.infrastructure.resilience.token_bucket import TokenBucketRateLimiter
 
 pytestmark = [
@@ -47,4 +48,29 @@ def test_controlled_primary_stack_against_one_public_package() -> None:
     assert details.source_adapter == "gplay-scraper"
     assert 0 < len(reviews.reviews) <= 3
     assert all(review.source_adapter == "gplay-scraper" for review in reviews.reviews)
+    assert limiter.calls >= 2
+
+
+def test_controlled_primary_stack_through_configured_real_proxy() -> None:
+    proxy_url = os.getenv("SAHABINO_EXTERNAL_PROXY_URL")
+    if not proxy_url:
+        pytest.skip("set SAHABINO_EXTERNAL_PROXY_URL to run the real-proxy smoke test")
+    limiter = CountingRateLimiter()
+    lease = ProxyLease(
+        "external-proxy-smoke",
+        endpoint=ProxyEndpoint("external-proxy", SecretStr(proxy_url)),
+    )
+    adapter = PrimaryAdapterFactory(limiter, timeout_seconds=20).create(
+        "external-proxy-smoke",
+        lease,
+    )
+
+    try:
+        details = adapter.get_app("com.whatsapp", "en", "us")
+        reviews = adapter.get_reviews("com.whatsapp", "en", "us", 3)
+    finally:
+        adapter.close()
+
+    assert details.source_adapter == "gplay-scraper"
+    assert 0 < len(reviews.reviews) <= 3
     assert limiter.calls >= 2
