@@ -42,6 +42,7 @@ class CircuitBreaker:
         self._failure_count = 0
         self._opened_at: float | None = None
         self._probe_in_flight = False
+        self._generation = 0
         self._lock = Lock()
 
     @property
@@ -49,9 +50,9 @@ class CircuitBreaker:
         with self._lock:
             return self._state
 
-    def before_call(self) -> None:
+    def before_call(self) -> int | None:
         if not self._enabled:
-            return
+            return None
         with self._lock:
             if self._state == CircuitState.OPEN:
                 assert self._opened_at is not None
@@ -63,17 +64,26 @@ class CircuitBreaker:
                 if self._probe_in_flight:
                     raise CircuitOpen("Google Play circuit half-open probe is in progress")
                 self._probe_in_flight = True
+            return self._generation
 
-    def record_success(self) -> None:
+    def record_success(self, *, call_token: int | None = None) -> None:
         if not self._enabled:
             return
         with self._lock:
+            if call_token is not None and call_token != self._generation:
+                return
             self._state = CircuitState.CLOSED
             self._failure_count = 0
             self._opened_at = None
             self._probe_in_flight = False
 
-    def record_failure(self, error: BaseException, *, proxied: bool = False) -> None:
+    def record_failure(
+        self,
+        error: BaseException,
+        *,
+        proxied: bool = False,
+        call_token: int | None = None,
+    ) -> None:
         if not self._enabled:
             return
         relevant = isinstance(
@@ -92,6 +102,10 @@ class CircuitBreaker:
         ):
             relevant = False
         with self._lock:
+            if call_token is not None and call_token != self._generation:
+                return
+            if self._state == CircuitState.OPEN:
+                return
             if not relevant:
                 self._probe_in_flight = False
                 return
@@ -103,6 +117,7 @@ class CircuitBreaker:
                 self._open()
 
     def _open(self) -> None:
+        self._generation += 1
         self._state = CircuitState.OPEN
         self._opened_at = self._clock.monotonic()
         self._probe_in_flight = False

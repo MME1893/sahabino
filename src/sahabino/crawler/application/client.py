@@ -140,10 +140,13 @@ class ApplicationPlayStoreClient:
         )
 
     def close(self) -> None:
-        if self._primary is not None:
-            self._primary.close()
-            self._primary = None
-        self._proxy_provider.release(self._lease)
+        primary = self._primary
+        self._primary = None
+        try:
+            if primary is not None:
+                primary.close()
+        finally:
+            self._proxy_provider.release(self._lease)
 
     def _execute[ResultT](
         self,
@@ -152,7 +155,7 @@ class ApplicationPlayStoreClient:
         hooks: OperationHooks,
     ) -> ResultT:
         self._refresh_egress_if_needed()
-        self._circuit.before_call()
+        circuit_call_token = self._circuit.before_call()
         last_primary_attempt = 0
 
         def attempt(attempt_number: int) -> ResultT:
@@ -197,7 +200,11 @@ class ApplicationPlayStoreClient:
             )
         except CrawlerError as error:
             proxied = not self._lease.is_direct
-            self._circuit.record_failure(error, proxied=proxied)
+            self._circuit.record_failure(
+                error,
+                proxied=proxied,
+                call_token=circuit_call_token,
+            )
             if not self._fallback.should_use_secondary(error):
                 raise
             hooks.before_retry(error)
@@ -206,12 +213,16 @@ class ApplicationPlayStoreClient:
                 result = secondary_operation()
             except Exception as raw_secondary_error:
                 secondary_error = self._classifier.classify(raw_secondary_error)
-                self._circuit.record_failure(secondary_error, proxied=False)
+                self._circuit.record_failure(
+                    secondary_error,
+                    proxied=False,
+                    call_token=circuit_call_token,
+                )
                 raise secondary_error from raw_secondary_error
-            self._circuit.record_success()
+            self._circuit.record_success(call_token=circuit_call_token)
             return result
         self._network.record_success(self._lease)
-        self._circuit.record_success()
+        self._circuit.record_success(call_token=circuit_call_token)
         return result
 
     def _get_primary(self) -> PlayStoreAdapter:
