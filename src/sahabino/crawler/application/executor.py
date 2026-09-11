@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import datetime
@@ -10,6 +11,8 @@ from sahabino.crawler.application.ports.registry import ApplicationRegistryPort
 from sahabino.crawler.application.tasks import ApplicationCrawlCommand
 from sahabino.crawler.domain.dto import ApplicationRef
 from sahabino.crawler.domain.results import CrawlRunStatus, CrawlTaskType, TriggerType
+
+logger = logging.getLogger(__name__)
 
 
 class CrawlerService:
@@ -43,9 +46,23 @@ class CrawlerService:
         scheduled_for: datetime | None = None,
     ) -> UUID:
         run_id = self._create_run(trigger_type, scheduled_for)
+        run_context = {
+            "crawl_run_id": run_id,
+            "trigger_type": trigger_type.value,
+        }
+        if scheduled_for is not None:
+            run_context["scheduled_for"] = scheduled_for.isoformat()
+        logger.info(
+            "crawl run started",
+            extra={"event": "crawler.run.started", **run_context},
+        )
         try:
             applications = self._registry.list_active_applications()
         except Exception as error:
+            logger.exception(
+                "crawl run failed while loading applications",
+                extra={"event": "crawler.run.failed", **run_context},
+            )
             self._finish_failed_preserving(run_id, error)
             # here intentionally we just return id
             # because each task execute independently
@@ -91,8 +108,20 @@ class CrawlerService:
                 for future in futures:
                     future.result()
             self._finish_run(run_id)
+            logger.info(
+                "crawl run completed",
+                extra={
+                    "event": "crawler.run.completed",
+                    "application_count": len(applications),
+                    **run_context,
+                },
+            )
 
         except Exception as error:
+            logger.exception(
+                "crawl run failed",
+                extra={"event": "crawler.run.failed", **run_context},
+            )
             self._finish_failed_preserving(run_id, error)
 
             # just returning same exception

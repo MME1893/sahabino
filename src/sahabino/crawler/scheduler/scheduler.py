@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from threading import Lock
@@ -8,6 +9,8 @@ from uuid import UUID
 
 from sahabino.crawler.application.executor import CrawlerService
 from sahabino.crawler.domain.results import TriggerType
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulerPort(Protocol):
@@ -39,6 +42,10 @@ class CrawlerScheduler:
 
     def run_scheduled_once(self) -> UUID | None:
         if not self._run_lock.acquire(blocking=False):
+            logger.warning(
+                "scheduled crawl skipped because another run is active",
+                extra={"event": "crawler.scheduler.overlap_skipped"},
+            )
             return None
         try:
             return self._crawler.crawl_once(
@@ -58,5 +65,12 @@ class CrawlerScheduler:
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(UTC),
+        )
+        logger.info(
+            "crawler scheduler started",
+            extra={
+                "event": "crawler.scheduler.started",
+                "interval_minutes": self._interval,
+            },
         )
         scheduler.start()

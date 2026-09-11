@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     """Runtime configuration loaded from Sahabino environment variables."""
 
     database_url: str
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_format: Literal["console", "json"] = "console"
+    environment: str = "development"
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_topic_partitions: int = Field(default=3, ge=1)
     kafka_topic_replication_factor: int = Field(default=1, ge=1)
@@ -37,6 +40,14 @@ class Settings(BaseSettings):
     playstore_circuit_breaker_cooldown_seconds: float = Field(default=60.0, ge=0)
     playstore_secondary_adapter_enabled: bool = True
     application_registry_base_url: str = "http://localhost:8000"
+
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, value: str) -> str:
+        environment = value.strip()
+        if not environment:
+            raise ValueError("environment must not be blank")
+        return environment
 
     @model_validator(mode="after")
     def validate_proxy_configuration(self) -> "Settings":

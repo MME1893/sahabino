@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,13 +11,30 @@ from sahabino.app_registry.exceptions import (
     InvalidCategoryAssignmentError,
 )
 from sahabino.app_registry.router import router as registry_router
+from sahabino.common.config import get_settings
+from sahabino.common.observability import configure_logging
 from sahabino.db.session import dispose_engine
+
+settings = get_settings()
+configure_logging(
+    service_name="sahabino-api",
+    level=settings.log_level,
+    log_format=settings.log_format,
+    environment=settings.environment,
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    yield
-    await dispose_engine()
+    logger.info("API process started", extra={"event": "api.started"})
+    try:
+        yield
+    finally:
+        try:
+            await dispose_engine()
+        finally:
+            logger.info("API process stopped", extra={"event": "api.stopped"})
 
 
 def create_app() -> FastAPI:

@@ -239,6 +239,39 @@ GET    /categories
 Deleting an application deactivates it without removing its database row.
 Categories are seeded by Alembic and are read-only through the API.
 
+## Centralized logging
+
+Sahabino uses Python's standard `logging` API and writes either human-readable
+console records or structured JSON to stdout. Configure it with
+`SAHABINO_LOG_LEVEL`, `SAHABINO_LOG_FORMAT`, and `SAHABINO_ENVIRONMENT`; Compose
+sets the API and crawler to JSON automatically.
+
+Start only the normal local infrastructure with:
+
+```bash
+docker compose up -d postgres kafka
+```
+
+Start the application and opt-in logging stack with:
+
+```bash
+docker compose --profile observability up -d
+```
+
+Alloy collects only Docker containers labeled `com.sahabino.logs=true`, parses
+the application JSON, and forwards it to Loki. Grafana automatically provisions
+Loki and the **Sahabino Logging Smoke Dashboard**. The local endpoints are:
+
+```text
+Grafana:  http://localhost:3000
+Loki:     http://localhost:3100
+Alloy UI: http://localhost:12345
+```
+
+The credentials in `.env.example` are for local development only. Grafana,
+Loki, and Alloy are infrastructure concerns rather than application
+dependencies. Metrics, tracing, and OpenTelemetry are intentionally deferred.
+
 ## Tests and quality checks
 
 Run the full suite and repository checks with:
