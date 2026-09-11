@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     kafka_topic_partitions: int = Field(default=3, ge=1)
     kafka_topic_replication_factor: int = Field(default=1, ge=1)
     kafka_consumer_auto_offset_reset: Literal["earliest", "latest"] = "earliest"
+    ingestion_consumer_group_id: str = "sahabino-ingestion-v1"
     kafka_producer_queue_full_max_retries: int = Field(default=3, ge=0)
     kafka_producer_queue_full_poll_timeout_seconds: float = Field(default=0.1, gt=0)
 
@@ -48,6 +49,14 @@ class Settings(BaseSettings):
         if not environment:
             raise ValueError("environment must not be blank")
         return environment
+
+    @field_validator("ingestion_consumer_group_id")
+    @classmethod
+    def validate_ingestion_consumer_group_id(cls, value: str) -> str:
+        consumer_group = value.strip()
+        if not consumer_group:
+            raise ValueError("ingestion consumer group ID must not be blank")
+        return consumer_group
 
     @model_validator(mode="after")
     def validate_proxy_configuration(self) -> "Settings":

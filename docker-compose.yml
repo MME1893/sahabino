@@ -1,6 +1,11 @@
+x-sahabino-build: &sahabino-build
+  context: .
+  pull: false
+
 services:
   postgres:
     image: postgres:16-alpine
+    pull_policy: missing
 
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -22,6 +27,7 @@ services:
 
   kafka:
     image: apache/kafka:4.3.1
+    pull_policy: missing
 
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
@@ -58,8 +64,7 @@ services:
       start_period: 10s
 
   api:
-    build:
-      context: .
+    build: *sahabino-build
 
     environment:
       SAHABINO_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
@@ -92,8 +97,7 @@ services:
       start_period: 5s
 
   crawler:
-    build:
-      context: .
+    build: *sahabino-build
 
     command: ["uv", "run", "--no-sync", "python", "-m", "sahabino.crawler", "scheduler"]
 
@@ -116,8 +120,32 @@ services:
       api:
         condition: service_healthy
 
+  ingestion:
+    build: *sahabino-build
+
+    command: ["uv", "run", "--no-sync", "python", "-m", "sahabino.ingestion"]
+    restart: on-failure
+
+    environment:
+      SAHABINO_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      SAHABINO_KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
+      SAHABINO_INGESTION_CONSUMER_GROUP_ID: "${SAHABINO_INGESTION_CONSUMER_GROUP_ID:-sahabino-ingestion-v1}"
+      SAHABINO_LOG_FORMAT: "json"
+      SAHABINO_LOG_LEVEL: "INFO"
+      SAHABINO_ENVIRONMENT: "development"
+
+    labels:
+      com.sahabino.logs: "true"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
   loki:
     image: grafana/loki:3.7.0
+    pull_policy: missing
     profiles:
       - observability
 
@@ -132,6 +160,7 @@ services:
 
   alloy:
     image: grafana/alloy:v1.19.0
+    pull_policy: missing
     profiles:
       - observability
 
@@ -156,6 +185,7 @@ services:
 
   grafana:
     image: grafana/grafana:12.4.0
+    pull_policy: missing
     profiles:
       - observability
 
