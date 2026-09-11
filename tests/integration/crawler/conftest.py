@@ -87,13 +87,13 @@ def clean_crawler_database(crawler_database_url: str) -> Iterator[None]:
     with psycopg.connect(dsn, autocommit=True) as connection:
         connection.execute(
             "TRUNCATE TABLE crawl_tasks, crawl_runs, application_categories, applications "
-            "RESTART IDENTITY"
+            "RESTART IDENTITY CASCADE"
         )
     yield
     with psycopg.connect(dsn, autocommit=True) as connection:
         connection.execute(
             "TRUNCATE TABLE crawl_tasks, crawl_runs, application_categories, applications "
-            "RESTART IDENTITY"
+            "RESTART IDENTITY CASCADE"
         )
 
 
