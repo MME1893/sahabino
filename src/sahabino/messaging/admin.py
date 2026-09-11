@@ -9,6 +9,7 @@ from confluent_kafka import KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]
 
 from sahabino.common.config import get_settings
+from sahabino.common.observability import configure_logging
 from sahabino.messaging.exceptions import (
     TopicProvisioningError,
     TopicTopologyMismatchError,
@@ -248,6 +249,12 @@ def delete_topics(
 
 def main() -> None:
     settings = get_settings()
+    configure_logging(
+        service_name="sahabino-messaging-admin",
+        level=settings.log_level,
+        log_format=settings.log_format,
+        environment=settings.environment,
+    )
     topology = TopicTopology(
         partitions=settings.kafka_topic_partitions,
         replication_factor=settings.kafka_topic_replication_factor,
