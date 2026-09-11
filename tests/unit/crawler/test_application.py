@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from json import JSONDecodeError
@@ -739,7 +740,9 @@ def test_proxy_407_is_unhealthy_rotates_and_does_not_open_circuit() -> None:
     assert secondary.app_calls == 0
 
 
-def test_persisted_task_error_redacts_proxy_credentials() -> None:
+def test_persisted_task_error_redacts_proxy_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     password = "task-secret-password"
     command, lifecycle, _, _ = _command(
         FakeAdapter(
@@ -749,7 +752,11 @@ def test_persisted_task_error_redacts_proxy_credentials() -> None:
         )
     )
 
-    _execute(command)
+    with caplog.at_level(
+        logging.ERROR,
+        logger="sahabino.crawler.application.tasks",
+    ):
+        _execute(command)
 
     app_id = command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
     error = lifecycle.tasks[app_id]["error"]
@@ -757,6 +764,10 @@ def test_persisted_task_error_redacts_proxy_credentials() -> None:
     assert password not in repr(error)
     assert "fake-user" not in repr(error)
     assert "proxy.example" not in repr(error)
+    assert password not in caplog.text
+    assert "fake-user" not in caplog.text
+    assert "proxy.example" not in caplog.text
+    assert any(getattr(record, "event", None) == "crawler.task.failed" for record in caplog.records)
 
 
 def test_local_rate_limit_failure_changes_no_proxy_circuit_or_adapter_policy() -> None:
