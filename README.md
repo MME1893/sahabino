@@ -4,8 +4,8 @@ A data collection and analytics platform for monitoring application metrics,
 reviews, and network-quality measurements.
 
 The current service provides an application registry, an hourly Google Play
-crawler, crawler lifecycle persistence in PostgreSQL, and versioned collected-data
-events through Kafka. Analytics ingestion remains a later subsystem.
+crawler, crawler lifecycle persistence, versioned collected-data events through
+Kafka, and synchronous idempotent ingestion into PostgreSQL.
 
 ## Requirements
 
@@ -39,6 +39,7 @@ Kafka topic topology and client behavior are configured centrally with:
 SAHABINO_KAFKA_TOPIC_PARTITIONS=3
 SAHABINO_KAFKA_TOPIC_REPLICATION_FACTOR=1
 SAHABINO_KAFKA_CONSUMER_AUTO_OFFSET_RESET=earliest
+SAHABINO_INGESTION_CONSUMER_GROUP_ID=sahabino-ingestion-v1
 SAHABINO_KAFKA_PRODUCER_QUEUE_FULL_MAX_RETRIES=3
 SAHABINO_KAFKA_PRODUCER_QUEUE_FULL_POLL_TIMEOUT_SECONDS=0.1
 ```
@@ -62,15 +63,15 @@ Once running, the interactive Swagger UI is available at
 ## Docker Compose
 
 The Compose stack contains PostgreSQL, a single-node Apache Kafka KRaft broker,
-the API, and the standalone crawler. Build the image, start infrastructure, run
-migrations explicitly, and then start the API and crawler:
+the API, crawler, and ingestion worker. Build the image, start infrastructure,
+run migrations and topic provisioning explicitly, and then start the processes:
 
 ```bash
-docker compose build api crawler
+docker compose build api crawler ingestion
 docker compose up -d postgres kafka
 docker compose run --rm api uv run --no-sync alembic upgrade head
 docker compose run --rm api uv run --no-sync python -m sahabino.messaging.admin
-docker compose up -d api crawler
+docker compose up -d api crawler ingestion
 ```
 
 PostgreSQL and Kafka data are retained in named volumes. Compose supplies the API
@@ -137,10 +138,30 @@ end-to-end exactly-once delivery.
 
 The consumer supports `earliest` (the default) or `latest` offset reset behavior
 while continuing to disable automatic commits and automatic offset storage.
-Future ingestion will use at-least-once delivery, idempotent database writes,
+Ingestion uses at-least-once delivery with idempotent database effects,
 `event_id` deduplication, and an explicit Kafka offset commit only after a
-successful PostgreSQL transaction. Database ingestion and its deduplication
-tables are not implemented yet.
+successful PostgreSQL transaction.
+
+## Ingestion
+
+Run the standalone serial ingestion worker with:
+
+```bash
+uv run python -m sahabino.ingestion
+```
+
+One consumer in `SAHABINO_INGESTION_CONSUMER_GROUP_ID` subscribes to both Play
+Store topics. Each valid message claims its event ID and performs its business
+write in one PostgreSQL transaction. The Kafka offset is committed only after
+the database commit. Invalid contracts are logged, skipped, and acknowledged;
+database, business-consistency, and Kafka commit failures terminate the worker
+so Compose can restart it.
+
+App-stat events create one immutable snapshot per crawl task. Review events
+atomically upsert latest state and add lightweight per-task observations. A late
+observation can move `first_observed_at` earlier and add history, but cannot
+replace newer current review fields. For equal observation timestamps, the
+incoming event deterministically wins.
 
 ## Google Play crawler
 
@@ -244,7 +265,7 @@ Categories are seeded by Alembic and are read-only through the API.
 Sahabino uses Python's standard `logging` API and writes either human-readable
 console records or structured JSON to stdout. Configure it with
 `SAHABINO_LOG_LEVEL`, `SAHABINO_LOG_FORMAT`, and `SAHABINO_ENVIRONMENT`; Compose
-sets the API and crawler to JSON automatically.
+sets the API, crawler, and ingestion worker to JSON automatically.
 
 Start only the normal local infrastructure with:
 
@@ -272,6 +293,73 @@ The credentials in `.env.example` are for local development only. Grafana,
 Loki, and Alloy are infrastructure concerns rather than application
 dependencies. Metrics, tracing, and OpenTelemetry are intentionally deferred.
 
+## Full runtime smoke test
+
+For local end-to-end acceptance, Sahabino includes:
+
+```text
+scripts/smoke-full-pipeline.sh
+```
+
+It validates the real Compose/runtime path:
+
+```text
+Application Registry
+→ real Google Play crawler
+→ crawler lifecycle PostgreSQL
+→ Kafka
+→ ingestion
+→ ingestion PostgreSQL
+→ Alloy
+→ Loki
+→ Grafana provisioning
+```
+
+Run it with existing project images:
+
+```bash
+bash scripts/smoke-full-pipeline.sh
+```
+
+Rebuild the API/crawler/ingestion images first when source or dependencies have
+changed:
+
+```bash
+bash scripts/smoke-full-pipeline.sh --build
+```
+
+If no active Registry applications exist, the optional seed mode creates
+Telegram and WhatsApp when those package names are absent:
+
+```bash
+bash scripts/smoke-full-pipeline.sh --seed
+```
+
+The smoke test is stateful but non-destructive: it creates normal crawl/Kafka/
+ingestion/log data and preserves named volumes. It temporarily isolates the
+crawler scheduler, drains old ingestion backlog, stops ingestion to measure the
+new crawler Kafka delta, restarts ingestion, requires consumer lag to return to
+zero, validates run-specific database rows, and checks structured service logs
+in Loki. Because it performs real Google Play requests, it is intended for local
+acceptance/demo use rather than ordinary CI.
+
+Skip only the logging-stack checks with:
+
+```bash
+bash scripts/smoke-full-pipeline.sh --skip-observability
+```
+
+Stop containers after the run while preserving named volumes with:
+
+```bash
+bash scripts/smoke-full-pipeline.sh --down-after
+```
+
+See [`docs/testing/smoke-full-pipeline.md`](docs/testing/smoke-full-pipeline.md)
+for flags, environment overrides, exact assertions, cache behavior, safety and
+side effects, troubleshooting, Loki queries, and the distinction between this
+runtime smoke test and the deterministic pytest integration suite.
+
 ## Tests and quality checks
 
 Run the full suite and repository checks with:
@@ -296,12 +384,24 @@ Run the real Kafka publish/consume integration test with:
 uv run pytest tests/integration/kafka
 ```
 
-Run crawler unit tests or its real PostgreSQL/Kafka orchestration tests with:
+Run crawler unit tests and crawler/ingestion integration suites with:
 
 ```bash
 uv run pytest tests/unit/crawler
 uv run pytest tests/integration/crawler
+uv run pytest tests/integration/ingestion
 ```
+
+The automated crawler-to-ingestion full-flow integration test is:
+
+```bash
+uv run pytest tests/integration/ingestion/test_crawler_to_ingestion_flow.py -v
+```
+
+It uses fake Registry/Google Play boundaries while exercising the real crawler,
+PostgreSQL lifecycle persistence, Kafka producer/broker/consumer, ingestion
+worker, and ingestion PostgreSQL persistence. No real Google Play, Compose
+application services, Loki, Alloy, or Grafana are required by that pytest test.
 
 Crawler tests use fake Play Store adapters and never require Google Play. The
 production controlled-primary smoke is skipped by default; opt in manually with:
