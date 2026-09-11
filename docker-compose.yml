@@ -64,6 +64,12 @@ services:
     environment:
       SAHABINO_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
       SAHABINO_KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
+      SAHABINO_LOG_FORMAT: "json"
+      SAHABINO_LOG_LEVEL: "INFO"
+      SAHABINO_ENVIRONMENT: "development"
+
+    labels:
+      com.sahabino.logs: "true"
 
     ports:
       - "8000:8000"
@@ -95,6 +101,12 @@ services:
       SAHABINO_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
       SAHABINO_KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
       SAHABINO_APPLICATION_REGISTRY_BASE_URL: "http://api:8000"
+      SAHABINO_LOG_FORMAT: "json"
+      SAHABINO_LOG_LEVEL: "INFO"
+      SAHABINO_ENVIRONMENT: "development"
+
+    labels:
+      com.sahabino.logs: "true"
 
     depends_on:
       postgres:
@@ -104,6 +116,67 @@ services:
       api:
         condition: service_healthy
 
+  loki:
+    image: grafana/loki:3.7.0
+    profiles:
+      - observability
+
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+
+    ports:
+      - "3100:3100"
+
+    volumes:
+      - ./infrastructure/observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+
+  alloy:
+    image: grafana/alloy:v1.19.0
+    profiles:
+      - observability
+
+    command:
+      [
+        "run",
+        "--server.http.listen-addr=0.0.0.0:12345",
+        "--storage.path=/var/lib/alloy/data",
+        "/etc/alloy/config.alloy",
+      ]
+
+    ports:
+      - "12345:12345"
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./infrastructure/observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    profiles:
+      - observability
+
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-sahabino}
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - ./infrastructure/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
+    depends_on:
+      - loki
+
 volumes:
   postgres_data:
   kafka_data:
+  loki_data:
+  grafana_data:
+  alloy_data:

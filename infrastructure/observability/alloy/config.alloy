@@ -1,0 +1,47 @@
+discovery.docker "sahabino" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "sahabino" {
+  targets = discovery.docker.sahabino.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_sahabino_logs"]
+    regex         = "true"
+    action        = "keep"
+  }
+}
+
+loki.source.docker "sahabino" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.sahabino.output
+  forward_to = [loki.process.sahabino.receiver]
+}
+
+loki.process "sahabino" {
+  forward_to = [loki.write.local.receiver]
+
+  stage.docker {}
+
+  stage.json {
+    expressions = {
+      service     = "service",
+      environment = "environment",
+      level       = "level",
+    }
+  }
+
+  stage.labels {
+    values = {
+      service     = "",
+      environment = "",
+      level       = "",
+    }
+  }
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
