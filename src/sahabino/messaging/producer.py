@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
 from confluent_kafka import KafkaError, KafkaException, Message, Producer
@@ -16,6 +19,13 @@ from sahabino.messaging.exceptions import (
 DEFAULT_FLUSH_TIMEOUT_SECONDS = 10.0
 DEFAULT_QUEUE_FULL_MAX_RETRIES = 3
 DEFAULT_QUEUE_FULL_POLL_TIMEOUT_SECONDS = 0.1
+
+
+@dataclass(frozen=True, slots=True)
+class KafkaBatchMessage:
+    topic: str
+    key: str
+    event: EventEnvelope[Any]
 
 
 def producer_config(bootstrap_servers: str) -> dict[str, Any]:
@@ -60,6 +70,7 @@ class KafkaProducer:
         self._queue_full_poll_timeout = queue_full_poll_timeout
         self._delivery_errors: list[str] = []
         self._closed = False
+        self._lock = RLock()
 
     @classmethod
     def from_settings(
@@ -78,6 +89,17 @@ class KafkaProducer:
 
     def publish(self, *, topic: str, key: str, event: EventEnvelope[Any]) -> None:
         """Serialize and queue one keyed envelope for delivery."""
+        with self._lock:
+            self._publish(topic=topic, key=key, event=event)
+
+    def publish_batch(self, messages: Iterable[KafkaBatchMessage]) -> None:
+        """Publish an operation batch and wait at one bounded delivery boundary."""
+        with self._lock:
+            for message in messages:
+                self._publish(topic=message.topic, key=message.key, event=message.event)
+            self._flush(None)
+
+    def _publish(self, *, topic: str, key: str, event: EventEnvelope[Any]) -> None:
         self._ensure_open()
         value = serialize_event(event)
         encoded_key = encode_message_key(key)
@@ -118,6 +140,10 @@ class KafkaProducer:
 
     def flush(self, timeout: float | None = None) -> None:
         """Wait for queued deliveries and report failures or remaining messages."""
+        with self._lock:
+            self._flush(timeout)
+
+    def _flush(self, timeout: float | None) -> None:
         self._ensure_open()
         effective_timeout = self._flush_timeout if timeout is None else timeout
         try:
@@ -132,10 +158,11 @@ class KafkaProducer:
 
     def close(self, timeout: float | None = None) -> None:
         """Flush successfully before marking this producer closed."""
-        if self._closed:
-            return
-        self.flush(timeout)
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            self._flush(timeout)
+            self._closed = True
 
     def _on_delivery(self, error: KafkaError | None, message: Message) -> None:
         if error is not None:

@@ -15,7 +15,12 @@ from sahabino.messaging.exceptions import (
     ProducerDeliveryError,
     ProducerPublishError,
 )
-from sahabino.messaging.producer import KafkaProducer, encode_message_key, producer_config
+from sahabino.messaging.producer import (
+    KafkaBatchMessage,
+    KafkaProducer,
+    encode_message_key,
+    producer_config,
+)
 
 
 class FakeMessage:
@@ -320,6 +325,25 @@ def test_producer_reports_delivery_callback_failures(
 
     with pytest.raises(ProducerDeliveryError, match="broker rejected message"):
         producer.flush()
+
+
+def test_producer_batch_waits_for_one_bounded_delivery_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_fake_producer()
+    monkeypatch.setattr(producer_module, "Producer", FakeProducerClient)
+    producer = KafkaProducer("broker:9092", flush_timeout=3.0)
+
+    producer.publish_batch(
+        [
+            KafkaBatchMessage("test.events.v1", "application-id", _sample_envelope()),
+            KafkaBatchMessage("test.events.v1", "application-id", _sample_envelope()),
+        ]
+    )
+
+    client = FakeProducerClient.instances[0]
+    assert len(client.messages) == 2
+    assert client.flush_calls == [3.0]
 
 
 @pytest.mark.parametrize("topics", [[], [""], [" "], ["\t"]])

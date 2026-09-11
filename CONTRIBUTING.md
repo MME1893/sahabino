@@ -153,7 +153,7 @@ PostgreSQL integration tests use `TEST_DATABASE_URL` when it is set. Otherwise, 
 uv run pytest tests/integration/app_registry
 ```
 
-`TEST_DATABASE_URL` must point to a disposable test database. Integration tests apply migrations and clear application-related tables between tests, so it must never point to a development, staging, or production database containing data that needs to be preserved.
+`TEST_DATABASE_URL` must point to a disposable test database. Integration tests apply migrations and clear application and crawler-lifecycle tables between tests, so it must never point to a development, staging, or production database containing data that needs to be preserved.
 
 In GitHub Actions, the CI workflow starts a temporary PostgreSQL service and provides its connection string through `TEST_DATABASE_URL`. Testcontainers is therefore not used inside CI.
 

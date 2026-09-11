@@ -79,7 +79,10 @@ def _configured_database(database_url: str) -> Iterator[str]:
 
 def _clear_applications(database_url: str) -> None:
     with psycopg.connect(_psycopg_dsn(database_url), autocommit=True) as connection:
-        connection.execute("TRUNCATE TABLE application_categories, applications RESTART IDENTITY")
+        connection.execute(
+            "TRUNCATE TABLE crawl_tasks, crawl_runs, application_categories, applications "
+            "RESTART IDENTITY"
+        )
 
 
 @pytest.fixture(autouse=True)

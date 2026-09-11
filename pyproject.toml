@@ -9,11 +9,17 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "alembic",
+    "APScheduler>=3.11.3,<4",
     "confluent-kafka",
+    "curl-cffi>=0.16.3,<0.17",
     "fastapi",
+    "google-play-scraper==1.2.7",
+    "gplay-scraper==1.0.6",
+    "httpx",
     "pydantic-settings>=2.15.0",
     "psycopg[binary]>=3,<4",
     "sqlalchemy[asyncio]>=2,<3",
+    "tenacity>=9.1.4,<10",
     "uvicorn",
 ]
 
@@ -26,11 +32,11 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "httpx",
     "mypy>=2.3.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-asyncio",
+    "pytest-cov>=7.1.0",
     "ruff>=0.16.6",
     "testcontainers[kafka,postgres]",
 ]
@@ -59,6 +65,9 @@ line-ending = "lf"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "external: opt-in tests that contact external services",
+]
 addopts = [
     "-ra",
     "--strict-markers",
@@ -73,5 +82,12 @@ warn_unused_configs = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["confluent_kafka", "confluent_kafka.*"]
+module = [
+    "apscheduler", "apscheduler.*",
+    "confluent_kafka", "confluent_kafka.*",
+    "curl_cffi", "curl_cffi.*",
+    "google_play_scraper", "google_play_scraper.*",
+    "gplay_scraper", "gplay_scraper.*",
+    "tenacity", "tenacity.*",
+]
 ignore_missing_imports = true

@@ -118,3 +118,6 @@ jobs:
 
       - name: Run Kafka integration tests
         run: uv run pytest tests/integration/kafka
+
+      - name: Run crawler PostgreSQL and Kafka integration tests
+        run: uv run pytest tests/integration/crawler
