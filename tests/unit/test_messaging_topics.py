@@ -12,6 +12,7 @@ def test_required_topics_are_unique_versioned_domain_topics() -> None:
         "playstore.app-stats.v1",
         "playstore.review-observed.v1",
         "network.analysis-collected.v1",
+        "network.capture-ready.v1",
     ]
     assert len(SAHABINO_TOPICS) == len(set(SAHABINO_TOPICS))
     assert all(name.endswith(".v1") for name in SAHABINO_TOPICS)
