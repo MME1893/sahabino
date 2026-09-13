@@ -12,6 +12,7 @@ Kafka, and synchronous idempotent ingestion into PostgreSQL.
 - Python 3.12
 - [uv](https://docs.astral.sh/uv/)
 - PostgreSQL 16 and Apache Kafka 4.3.1, or Docker with Docker Compose
+- TShark for host-side network analysis (included in the analyzer image)
 - A running Docker daemon when integration tests use Testcontainers
 
 ## Local setup
@@ -110,6 +111,7 @@ The canonical domain topics are:
 ```text
 playstore.app-stats.v1
 playstore.review-observed.v1
+network.capture-ready.v1
 network.analysis-collected.v1
 ```
 
@@ -151,7 +153,7 @@ uv run python -m sahabino.ingestion
 ```
 
 One consumer in `SAHABINO_INGESTION_CONSUMER_GROUP_ID` subscribes to both Play
-Store topics. Each valid message claims its event ID and performs its business
+Store topics and the network-analysis topic. Each valid message claims its event ID and performs its business
 write in one PostgreSQL transaction. The Kafka offset is committed only after
 the database commit. Invalid contracts are logged, skipped, and acknowledged;
 database, business-consistency, and Kafka commit failures terminate the worker
@@ -254,11 +256,37 @@ GET    /applications/{application_id}
 PATCH  /applications/{application_id}
 DELETE /applications/{application_id}
 GET    /categories
+POST   /network-captures
+GET    /network-captures
+GET    /network-captures/{capture_id}
+POST   /network-captures/{capture_id}/complete
+POST   /network-captures/{capture_id}/download-url
 ```
 
 `GET /applications` accepts the optional `active=true` or `active=false` filter.
 Deleting an application deactivates it without removing its database row.
 Categories are seeded by Alembic and are read-only through the API.
+
+## Network analysis quick start
+
+The opt-in `network` profile adds SeaweedFS S3-compatible storage and a dedicated
+TShark analyzer image. PCAPNG is recommended; classic PCAP is supported with
+direction-dependent metrics degraded to NULL when metadata is unavailable.
+
+```bash
+docker compose --profile network build api ingestion network-analyzer
+docker compose --profile network up -d postgres kafka seaweedfs
+docker compose run --rm api uv run --no-sync alembic upgrade head
+docker compose run --rm api uv run --no-sync python -m sahabino.messaging.admin
+docker compose --profile network run --rm network-analyzer \
+  uv run --no-sync python -m sahabino.network storage-init
+docker compose --profile network up -d api ingestion network-analyzer
+bash scripts/smoke-network-pipeline.sh
+```
+
+The lifecycle is metadata registration, direct presigned upload, explicit
+completion, Kafka dispatch, TShark analysis, and idempotent ingestion. See the
+[network architecture, API, metric formulas, operations, and limitations](docs/network/README.md).
 
 ## Centralized logging
 
