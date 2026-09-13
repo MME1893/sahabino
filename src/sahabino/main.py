@@ -14,6 +14,15 @@ from sahabino.app_registry.router import router as registry_router
 from sahabino.common.config import get_settings
 from sahabino.common.observability import configure_logging
 from sahabino.db.session import dispose_engine
+from sahabino.network.dependencies import close_network_runtime
+from sahabino.network.exceptions import (
+    CaptureDispatchError,
+    CaptureNotFoundError,
+    CaptureTooLargeError,
+    NetworkCaptureError,
+    StorageUnavailableError,
+)
+from sahabino.network.router import router as network_router
 
 settings = get_settings()
 configure_logging(
@@ -32,14 +41,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         try:
-            await dispose_engine()
+            close_network_runtime()
         finally:
-            logger.info("API process stopped", extra={"event": "api.stopped"})
+            try:
+                await dispose_engine()
+            finally:
+                logger.info("API process stopped", extra={"event": "api.stopped"})
 
 
 def create_app() -> FastAPI:
     application = FastAPI(title="Sahabino", lifespan=lifespan)
     application.include_router(registry_router)
+    application.include_router(network_router)
 
     @application.exception_handler(ApplicationNotFoundError)
     async def application_not_found_handler(
@@ -69,6 +82,43 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"detail": str(error)},
+        )
+
+    @application.exception_handler(CaptureNotFoundError)
+    async def capture_not_found_handler(
+        _request: Request, error: CaptureNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": {"code": error.code, "message": str(error)}},
+        )
+
+    @application.exception_handler(CaptureTooLargeError)
+    async def capture_too_large_handler(
+        _request: Request, error: CaptureTooLargeError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": {"code": error.code, "message": str(error)}},
+        )
+
+    @application.exception_handler(StorageUnavailableError)
+    @application.exception_handler(CaptureDispatchError)
+    async def network_dependency_handler(
+        _request: Request, error: NetworkCaptureError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": {"code": error.code, "message": str(error)}},
+        )
+
+    @application.exception_handler(NetworkCaptureError)
+    async def network_capture_handler(
+        _request: Request, error: NetworkCaptureError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": {"code": error.code, "message": str(error)}},
         )
 
     return application

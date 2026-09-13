@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "sahabino-local-development",
+      "credentials": [
+        {
+          "accessKey": "sahabino",
+          "secretKey": "sahabino-development-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}

@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic",
     "APScheduler>=3.11.3,<4",
+    "boto3>=1.40,<2",
     "confluent-kafka",
     "curl-cffi>=0.16.3,<0.17",
     "fastapi",
@@ -68,6 +69,7 @@ line-ending = "lf"
 testpaths = ["tests"]
 markers = [
     "external: opt-in tests that contact external services",
+    "system: tests requiring an installed system dependency such as TShark",
 ]
 addopts = [
     "-ra",
@@ -85,6 +87,8 @@ pretty = true
 [[tool.mypy.overrides]]
 module = [
     "apscheduler", "apscheduler.*",
+    "boto3", "boto3.*",
+    "botocore", "botocore.*",
     "confluent_kafka", "confluent_kafka.*",
     "curl_cffi", "curl_cffi.*",
     "google_play_scraper", "google_play_scraper.*",

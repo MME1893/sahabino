@@ -20,17 +20,24 @@ def consumer_config(
     bootstrap_servers: str,
     group_id: str,
     auto_offset_reset: OffsetResetPolicy = "earliest",
+    *,
+    max_poll_interval_ms: int | None = None,
 ) -> dict[str, Any]:
     """Build consumer settings for explicit post-processing offset commits."""
     if auto_offset_reset not in SUPPORTED_OFFSET_RESET_POLICIES:
         raise ValueError("auto.offset.reset must be 'earliest' or 'latest'")
-    return {
+    config: dict[str, Any] = {
         "bootstrap.servers": bootstrap_servers,
         "group.id": group_id,
         "enable.auto.commit": False,
         "enable.auto.offset.store": False,
         "auto.offset.reset": auto_offset_reset,
     }
+    if max_poll_interval_ms is not None:
+        if max_poll_interval_ms <= 0:
+            raise ValueError("max.poll.interval.ms must be positive")
+        config["max.poll.interval.ms"] = max_poll_interval_ms
+    return config
 
 
 def _validated_topics(topics: Sequence[str]) -> list[str]:
@@ -52,9 +59,17 @@ class KafkaConsumer:
         topics: Sequence[str],
         *,
         auto_offset_reset: OffsetResetPolicy = "earliest",
+        max_poll_interval_ms: int | None = None,
     ) -> None:
         selected_topics = _validated_topics(topics)
-        self._consumer = Consumer(consumer_config(bootstrap_servers, group_id, auto_offset_reset))
+        self._consumer = Consumer(
+            consumer_config(
+                bootstrap_servers,
+                group_id,
+                auto_offset_reset,
+                max_poll_interval_ms=max_poll_interval_ms,
+            )
+        )
         self._closed = False
         self._consumer.subscribe(selected_topics)
 
@@ -64,6 +79,8 @@ class KafkaConsumer:
         settings: Settings,
         group_id: str,
         topics: Sequence[str],
+        *,
+        max_poll_interval_ms: int | None = None,
     ) -> KafkaConsumer:
         """Construct a consumer from centralized application settings."""
         return cls(
@@ -71,6 +88,7 @@ class KafkaConsumer:
             group_id,
             topics,
             auto_offset_reset=settings.kafka_consumer_auto_offset_reset,
+            max_poll_interval_ms=max_poll_interval_ms,
         )
 
     def subscribe(self, topics: Sequence[str]) -> None:

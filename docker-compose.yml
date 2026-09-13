@@ -72,6 +72,12 @@ services:
       SAHABINO_LOG_FORMAT: "json"
       SAHABINO_LOG_LEVEL: "INFO"
       SAHABINO_ENVIRONMENT: "development"
+      SAHABINO_OBJECT_STORAGE_ENDPOINT_URL: "http://seaweedfs:8333"
+      SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL: "${SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL:-http://localhost:8333}"
+      SAHABINO_OBJECT_STORAGE_BUCKET: "${SAHABINO_OBJECT_STORAGE_BUCKET:-sahabino-network-captures}"
+      SAHABINO_OBJECT_STORAGE_ACCESS_KEY: "${SAHABINO_OBJECT_STORAGE_ACCESS_KEY:-sahabino}"
+      SAHABINO_OBJECT_STORAGE_SECRET_KEY: "${SAHABINO_OBJECT_STORAGE_SECRET_KEY:-sahabino-development-secret}"
+      SAHABINO_OBJECT_STORAGE_REGION: "${SAHABINO_OBJECT_STORAGE_REGION:-us-east-1}"
 
     labels:
       com.sahabino.logs: "true"
@@ -143,6 +149,73 @@ services:
       kafka:
         condition: service_healthy
 
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.46
+    pull_policy: missing
+    profiles:
+      - network
+
+    command:
+      [
+        "server",
+        "-s3",
+        "-filer",
+        "-dir=/data",
+        "-s3.port=8333",
+        "-s3.config=/etc/seaweedfs/s3.json",
+        "-master.volumeSizeLimitMB=1024",
+      ]
+
+    ports:
+      - "8333:8333"
+
+    volumes:
+      - seaweedfs_data:/data
+      - ./infrastructure/network/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9333/cluster/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  network-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile.network-analyzer
+      pull: false
+    profiles:
+      - network
+    restart: on-failure
+
+    environment:
+      SAHABINO_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+      SAHABINO_KAFKA_BOOTSTRAP_SERVERS: "kafka:19092"
+      SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID: "${SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID:-sahabino-network-analyzer-v1}"
+      SAHABINO_NETWORK_ANALYZER_MAX_POLL_INTERVAL_MS: "${SAHABINO_NETWORK_ANALYZER_MAX_POLL_INTERVAL_MS:-900000}"
+      SAHABINO_NETWORK_MAX_PARSED_RECORDS: "${SAHABINO_NETWORK_MAX_PARSED_RECORDS:-250000}"
+      SAHABINO_OBJECT_STORAGE_ENDPOINT_URL: "http://seaweedfs:8333"
+      SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL: "http://seaweedfs:8333"
+      SAHABINO_OBJECT_STORAGE_BUCKET: "${SAHABINO_OBJECT_STORAGE_BUCKET:-sahabino-network-captures}"
+      SAHABINO_OBJECT_STORAGE_ACCESS_KEY: "${SAHABINO_OBJECT_STORAGE_ACCESS_KEY:-sahabino}"
+      SAHABINO_OBJECT_STORAGE_SECRET_KEY: "${SAHABINO_OBJECT_STORAGE_SECRET_KEY:-sahabino-development-secret}"
+      SAHABINO_OBJECT_STORAGE_REGION: "${SAHABINO_OBJECT_STORAGE_REGION:-us-east-1}"
+      SAHABINO_LOG_FORMAT: "json"
+      SAHABINO_LOG_LEVEL: "INFO"
+      SAHABINO_ENVIRONMENT: "development"
+
+    labels:
+      com.sahabino.logs: "true"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+
   loki:
     image: grafana/loki:3.7.0
     pull_policy: missing
@@ -210,3 +283,4 @@ volumes:
   loki_data:
   grafana_data:
   alloy_data:
+  seaweedfs_data:
