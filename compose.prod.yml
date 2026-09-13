@@ -33,7 +33,12 @@ services:
     environment:
       KAFKA_LISTENERS: CONTROLLER://:9093,INTERNAL://:19092
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+      KAFKA_LOG_RETENTION_HOURS: "72"
+      KAFKA_LOG_RETENTION_BYTES: "268435456"
+      KAFKA_LOG_SEGMENT_BYTES: "134217728"
 
+    mem_limit: 768m
   api:
     restart: unless-stopped
     environment:
