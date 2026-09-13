@@ -13,6 +13,7 @@ from sahabino.common.config import get_settings
 from sahabino.crawler.infrastructure.persistence import models as crawler_models
 from sahabino.db.base import Base
 from sahabino.ingestion import models as ingestion_models
+from sahabino.network import models as network_models
 
 config = context.config
 
@@ -23,6 +24,7 @@ target_metadata = Base.metadata
 _ = registry_models
 _ = crawler_models
 _ = ingestion_models
+_ = network_models
 
 
 def run_migrations_offline() -> None:
