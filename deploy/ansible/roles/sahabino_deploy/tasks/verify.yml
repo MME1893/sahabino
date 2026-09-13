@@ -1,0 +1,47 @@
+---
+- name: Wait for the API health target
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ sahabino_api_port }}/docs"
+    method: GET
+    status_code: 200
+  register: sahabino_api_health
+  retries: "{{ sahabino_healthcheck_retries }}"
+  delay: "{{ sahabino_healthcheck_delay_seconds }}"
+  until: sahabino_api_health.status == 200
+
+- name: Verify loopback observability ports are accepting connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ item }}"
+    state: started
+    timeout: 60
+  loop:
+    - 3000
+    - 3100
+    - 12345
+
+- name: Read running Compose services
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['ps', '--services', '--filter', 'status=running'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_running_services_command
+  changed_when: false
+
+- name: Verify all requested production services are running
+  ansible.builtin.assert:
+    that:
+      - >-
+        (sahabino_infrastructure_services
+         + sahabino_application_services
+         + sahabino_observability_services)
+        | difference(sahabino_running_services_command.stdout_lines)
+        | length == 0
+    fail_msg: One or more requested Sahabino production services are not running.
+
+- name: Record the successful resolved revision outside the repository
+  ansible.builtin.copy:
+    content: "{{ sahabino_resolved_revision }}\n"
+    dest: "{{ sahabino_app_parent_dir }}/DEPLOYED_REVISION"
+    owner: "{{ sahabino_deploy_user }}"
+    group: "{{ sahabino_deploy_group }}"
+    mode: "0644"

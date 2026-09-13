@@ -1,0 +1,19 @@
+---
+sahabino_restore_confirm: false
+sahabino_restore_confirmation: ""
+sahabino_restore_dump_path: ""
+sahabino_restore_staged_path: "{{ sahabino_backup_dir }}/.restore-in-progress.dump"
+sahabino_restore_container_path: /tmp/sahabino-restore.dump
+sahabino_restore_compose_cli:
+  - docker
+  - compose
+  - --project-name
+  - "{{ sahabino_compose_project_name }}"
+  - --env-file
+  - .env
+  - --file
+  - docker-compose.yml
+  - --file
+  - compose.prod.yml
+  - --profile
+  - observability

@@ -1,0 +1,8 @@
+---
+- name: Restore a guarded Sahabino PostgreSQL backup
+  hosts: production
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: sahabino_restore

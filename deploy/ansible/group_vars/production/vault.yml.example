@@ -1,0 +1,20 @@
+---
+# Copy this file to vault.yml, replace every CHANGE_ME value, and encrypt it with:
+# ansible-vault encrypt group_vars/production/vault.yml
+vault_sahabino_postgres_db: sahabino
+vault_sahabino_postgres_user: sahabino
+vault_sahabino_postgres_password: CHANGE_ME_USE_A_LONG_URL_SAFE_PASSWORD
+
+vault_sahabino_grafana_admin_user: admin
+vault_sahabino_grafana_admin_password: CHANGE_ME_USE_A_LONG_URL_SAFE_PASSWORD
+
+# Credentials for the local SeaweedFS S3-compatible endpoint on the Sahabino
+# VPS. They are not AWS credentials and must match the local SeaweedFS S3
+# configuration if the optional network Compose profile is enabled. These are
+# needed by current application settings even while that profile is disabled.
+# Keep them unique and URL-safe.
+vault_sahabino_object_storage_access_key: CHANGE_ME_USE_A_UNIQUE_ACCESS_KEY
+vault_sahabino_object_storage_secret_key: CHANGE_ME_USE_A_LONG_URL_SAFE_SECRET
+
+# JSON is rendered safely into the remote .env. Leave empty when proxies are disabled.
+vault_sahabino_playstore_proxy_urls: []

@@ -1,0 +1,66 @@
+---
+- name: Check whether a current Git revision is available for the backup label
+  ansible.builtin.stat:
+    path: "{{ sahabino_app_dir }}/.git"
+  register: sahabino_pre_backup_git_stat
+
+- name: Detect an existing Sahabino PostgreSQL container by working directory
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --all
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project.working_dir={{ sahabino_app_dir }}"
+      - --filter
+      - label=com.docker.compose.service=postgres
+  register: sahabino_pre_backup_container_by_directory
+  changed_when: false
+
+- name: Detect an existing Sahabino PostgreSQL container by project name
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --all
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ sahabino_compose_project_name }}"
+      - --filter
+      - label=com.docker.compose.service=postgres
+  register: sahabino_pre_backup_container_by_project
+  changed_when: false
+
+- name: Read the currently deployed revision for the backup label
+  ansible.builtin.command:
+    argv:
+      - git
+      - rev-parse
+      - --short=12
+      - HEAD
+    chdir: "{{ sahabino_app_dir }}"
+  become_user: "{{ sahabino_deploy_user }}"
+  register: sahabino_pre_backup_revision_command
+  changed_when: false
+  when: sahabino_pre_backup_git_stat.stat.exists
+
+- name: Select the pre-deployment backup mode and revision label
+  ansible.builtin.set_fact:
+    sahabino_backup_kind: pre-deploy
+    sahabino_backup_label: >-
+      current-{{ sahabino_pre_backup_revision_command.stdout | default('unknown') }}-to-{{ sahabino_deploy_revision }}
+
+- name: Run and verify the pre-deployment backup
+  ansible.builtin.include_tasks: run.yml
+
+- name: Require a verified backup when a PostgreSQL container was present
+  ansible.builtin.assert:
+    that:
+      - >-
+        sahabino_created_backup_path is defined
+        or (
+          sahabino_pre_backup_container_by_directory.stdout | trim | length == 0
+          and sahabino_pre_backup_container_by_project.stdout | trim | length == 0
+        )
+    fail_msg: An existing Sahabino PostgreSQL container was not backed up; deployment is aborted.

@@ -1,0 +1,45 @@
+---
+- name: Verify that only local backups are enabled
+  ansible.builtin.assert:
+    that:
+      - not (sahabino_backup_remote_enabled | bool)
+    fail_msg: Remote/off-site backup is intentionally not implemented yet.
+
+- name: Create the PostgreSQL custom-format backup
+  ansible.builtin.command:
+    argv:
+      - "{{ sahabino_backup_executable }}"
+      - "{{ sahabino_backup_kind }}"
+      - "{{ sahabino_backup_label }}"
+  register: sahabino_backup_command
+  changed_when: sahabino_backup_command.stdout is match("^CREATED:")
+
+- name: Record the created backup path
+  ansible.builtin.set_fact:
+    sahabino_created_backup_path: >-
+      {{ sahabino_backup_command.stdout | regex_replace('^CREATED:', '') }}
+  when: sahabino_backup_command.stdout is match("^CREATED:")
+
+- name: Inspect the created backup file
+  ansible.builtin.stat:
+    path: "{{ sahabino_created_backup_path }}"
+  register: sahabino_backup_stat
+  when: sahabino_created_backup_path is defined
+
+- name: Verify the created backup is a non-empty regular file
+  ansible.builtin.assert:
+    that:
+      - sahabino_backup_stat.stat.exists
+      - sahabino_backup_stat.stat.isreg
+      - sahabino_backup_stat.stat.size | int > 0
+    fail_msg: The PostgreSQL backup file was not created correctly.
+  when: sahabino_created_backup_path is defined
+
+- name: Verify the backup archive catalog
+  ansible.builtin.command:
+    argv:
+      - pg_restore
+      - --list
+      - "{{ sahabino_created_backup_path }}"
+  changed_when: false
+  when: sahabino_created_backup_path is defined

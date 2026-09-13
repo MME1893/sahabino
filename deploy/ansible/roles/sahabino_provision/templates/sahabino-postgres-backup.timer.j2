@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Sahabino PostgreSQL backup daily
+
+[Timer]
+OnCalendar={{ sahabino_backup_schedule }}
+RandomizedDelaySec={{ sahabino_backup_randomized_delay }}
+Persistent=true
+Unit=sahabino-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

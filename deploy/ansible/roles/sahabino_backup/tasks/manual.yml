@@ -1,0 +1,8 @@
+---
+- name: Select the manual backup mode
+  ansible.builtin.set_fact:
+    sahabino_backup_kind: manual
+    sahabino_backup_label: "{{ sahabino_backup_label | default('manual', true) }}"
+
+- name: Run the common backup workflow
+  ansible.builtin.include_tasks: run.yml

@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+umask 077
+
+readonly CONFIG_FILE="{{ sahabino_backup_environment_file }}"
+if [[ ! -r "$CONFIG_FILE" ]]; then
+  echo "Backup configuration is not readable: $CONFIG_FILE" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
+
+readonly BACKUP_KIND="${1:-scheduled}"
+readonly RAW_LABEL="${2:-}"
+
+case "$BACKUP_KIND" in
+  scheduled|manual|pre-deploy|restore-safety) ;;
+  *)
+    echo "Unsupported backup kind: $BACKUP_KIND" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$BACKUP_KIND" == "scheduled" && ! "${SAHABINO_BACKUP_RETENTION_DAYS:-}" =~ ^[0-9]+$ ]]; then
+  echo "Backup retention must be a non-negative integer" >&2
+  exit 1
+fi
+
+if [[ "${SAHABINO_BACKUP_REMOTE_ENABLED:-false}" != "false" ]]; then
+  echo "Remote backup is not implemented; refusing to claim an off-site backup" >&2
+  exit 1
+fi
+
+install -d -m 0750 "$SAHABINO_BACKUP_DIR"
+
+container_id="$({
+  docker ps -aq \
+    --filter "label=com.docker.compose.project.working_dir=${SAHABINO_APP_DIR}" \
+    --filter "label=com.docker.compose.service=postgres"
+} | sed -n '1p')"
+
+if [[ -z "$container_id" ]]; then
+  container_id="$({
+    docker ps -aq \
+      --filter "label=com.docker.compose.project=${SAHABINO_COMPOSE_PROJECT_NAME}" \
+      --filter "label=com.docker.compose.service=postgres"
+  } | sed -n '1p')"
+fi
+
+if [[ -z "$container_id" ]]; then
+  echo "SKIPPED:no-sahabino-postgres-container"
+  exit 0
+fi
+
+partial_path=""
+started_for_backup=false
+
+cleanup_backup_attempt() {
+  if [[ -n "$partial_path" ]]; then
+    rm -f -- "$partial_path"
+  fi
+  if [[ "$started_for_backup" == "true" ]]; then
+    docker stop --time 30 "$container_id" >/dev/null
+  fi
+}
+trap cleanup_backup_attempt EXIT
+
+if [[ "$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' "$container_id")" != "true" ]]; then
+  docker start "$container_id" >/dev/null
+  started_for_backup=true
+fi
+
+postgres_user="$(docker exec "$container_id" printenv POSTGRES_USER)"
+postgres_db="$(docker exec "$container_id" printenv POSTGRES_DB)"
+if [[ -z "$postgres_user" || -z "$postgres_db" ]]; then
+  echo "The PostgreSQL container is missing POSTGRES_USER or POSTGRES_DB" >&2
+  exit 1
+fi
+
+ready=false
+for _attempt in $(seq 1 30); do
+  if docker exec "$container_id" \
+    pg_isready --quiet --username "$postgres_user" --dbname "$postgres_db"; then
+    ready=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$ready" != "true" ]]; then
+  echo "PostgreSQL did not become ready for backup" >&2
+  exit 1
+fi
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+safe_label="$(printf '%s' "$RAW_LABEL" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//; s/-$//')"
+filename="sahabino-postgres-${BACKUP_KIND}-${timestamp}"
+if [[ -n "$safe_label" ]]; then
+  filename="${filename}-${safe_label}"
+fi
+
+final_path="${SAHABINO_BACKUP_DIR}/${filename}.dump"
+partial_path="${final_path}.partial"
+
+docker exec "$container_id" pg_dump \
+  --format=custom \
+  --no-owner \
+  --no-privileges \
+  --username "$postgres_user" \
+  --dbname "$postgres_db" >"$partial_path"
+
+if [[ ! -s "$partial_path" ]]; then
+  echo "pg_dump produced an empty backup" >&2
+  exit 1
+fi
+
+pg_restore --list "$partial_path" >/dev/null
+mv -- "$partial_path" "$final_path"
+partial_path=""
+
+# Retention belongs only to the scheduled maintenance path. In particular, a
+# restore-safety backup must never prune the older dump currently being restored.
+if [[ "$BACKUP_KIND" == "scheduled" ]]; then
+  find "$SAHABINO_BACKUP_DIR" \
+    -maxdepth 1 \
+    -type f \
+    -name 'sahabino-postgres-*.dump' \
+    -mtime "+${SAHABINO_BACKUP_RETENTION_DAYS}" \
+    -delete
+fi
+
+if [[ "$started_for_backup" == "true" ]]; then
+  docker stop --time 30 "$container_id" >/dev/null
+  started_for_backup=false
+fi
+trap - EXIT
+
+echo "CREATED:${final_path}"

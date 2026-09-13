@@ -1,0 +1,44 @@
+---
+- name: Render the production environment file
+  ansible.builtin.template:
+    src: production.env.j2
+    dest: "{{ sahabino_app_dir }}/.env"
+    owner: "{{ sahabino_deploy_user }}"
+    group: "{{ sahabino_deploy_group }}"
+    mode: "0600"
+  no_log: true
+
+- name: Validate the merged production Compose configuration
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['config', '--quiet'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Render the merged Compose model for security checks
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['config', '--format', 'json'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_merged_compose_command
+  changed_when: false
+  no_log: true
+
+- name: Parse the merged Compose model
+  ansible.builtin.set_fact:
+    sahabino_merged_compose: "{{ sahabino_merged_compose_command.stdout | from_json }}"
+  no_log: true
+
+- name: Verify production port exposure and application logging settings
+  ansible.builtin.assert:
+    that:
+      - sahabino_merged_compose.services.postgres.ports | default([], true) | length == 0
+      - sahabino_merged_compose.services.kafka.ports | default([], true) | length == 0
+      - sahabino_merged_compose.services.grafana.ports[0].host_ip == "127.0.0.1"
+      - sahabino_merged_compose.services.loki.ports[0].host_ip == "127.0.0.1"
+      - sahabino_merged_compose.services.alloy.ports[0].host_ip == "127.0.0.1"
+      - sahabino_merged_compose.services.api.environment.SAHABINO_ENVIRONMENT == "production"
+      - sahabino_merged_compose.services.crawler.environment.SAHABINO_ENVIRONMENT == "production"
+      - sahabino_merged_compose.services.ingestion.environment.SAHABINO_ENVIRONMENT == "production"
+      - sahabino_merged_compose.services.api.environment.SAHABINO_LOG_FORMAT == "json"
+      - sahabino_merged_compose.services.crawler.environment.SAHABINO_LOG_FORMAT == "json"
+      - sahabino_merged_compose.services.ingestion.environment.SAHABINO_LOG_FORMAT == "json"
+    fail_msg: The merged Compose configuration violates a production exposure or logging invariant.

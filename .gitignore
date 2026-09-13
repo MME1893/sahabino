@@ -28,6 +28,12 @@ htmlcov/
 .env.*
 !.env.example
 
+# Production deployment files generated from examples
+deploy/ansible/inventory/production.yml
+deploy/ansible/group_vars/production/vault.yml
+deploy/ansible/.vault-password*
+deploy/ansible/*.retry
+
 # Logs
 *.log
 logs/

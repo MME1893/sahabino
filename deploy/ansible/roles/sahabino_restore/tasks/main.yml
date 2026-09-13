@@ -1,0 +1,289 @@
+---
+- name: Require both restore confirmation guards
+  ansible.builtin.assert:
+    that:
+      - sahabino_restore_confirm | bool
+      - sahabino_restore_confirmation == "RESTORE_SAHABINO_PRODUCTION"
+      - sahabino_restore_dump_path | trim | length > 0
+    fail_msg: >-
+      Restore is disabled by default. Supply the dump path, set
+      sahabino_restore_confirm=true, and set
+      sahabino_restore_confirmation=RESTORE_SAHABINO_PRODUCTION.
+
+- name: Resolve the requested backup path
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ sahabino_restore_dump_path }}"
+  register: sahabino_restore_realpath_command
+  changed_when: false
+
+- name: Restrict restores to the managed backup directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        sahabino_restore_realpath_command.stdout.startswith(sahabino_backup_dir + '/')
+      - sahabino_restore_realpath_command.stdout != sahabino_restore_staged_path
+    fail_msg: Place the dump in the managed PostgreSQL backup directory before restoring it.
+
+- name: Inspect the requested PostgreSQL dump
+  ansible.builtin.stat:
+    path: "{{ sahabino_restore_realpath_command.stdout }}"
+  register: sahabino_restore_dump_stat
+
+- name: Require a non-empty regular dump file
+  ansible.builtin.assert:
+    that:
+      - sahabino_restore_dump_stat.stat.exists
+      - sahabino_restore_dump_stat.stat.isreg
+      - sahabino_restore_dump_stat.stat.size | int > 0
+    fail_msg: The requested restore dump is not a non-empty regular file.
+
+- name: Validate the requested custom-format archive before stopping services
+  ansible.builtin.command:
+    argv:
+      - pg_restore
+      - --list
+      - "{{ sahabino_restore_realpath_command.stdout }}"
+  changed_when: false
+
+- name: Validate the production Compose configuration before restore
+  ansible.builtin.command:
+    argv: "{{ sahabino_restore_compose_cli + ['config', '--quiet'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Perform the guarded restore
+  block:
+    - name: Stage the requested dump away from retention cleanup
+      ansible.builtin.copy:
+        src: "{{ sahabino_restore_realpath_command.stdout }}"
+        dest: "{{ sahabino_restore_staged_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Stop database-writing application services
+      community.docker.docker_compose_v2:
+        project_src: "{{ sahabino_app_dir }}"
+        files: "{{ sahabino_compose_files }}"
+        env_files:
+          - .env
+        project_name: "{{ sahabino_compose_project_name }}"
+        profiles: "{{ sahabino_compose_profiles }}"
+        services: "{{ sahabino_database_writers }}"
+        state: stopped
+
+    - name: Ensure PostgreSQL is healthy for the safety backup and restore
+      community.docker.docker_compose_v2:
+        project_src: "{{ sahabino_app_dir }}"
+        files: "{{ sahabino_compose_files }}"
+        env_files:
+          - .env
+        project_name: "{{ sahabino_compose_project_name }}"
+        profiles: "{{ sahabino_compose_profiles }}"
+        services:
+          - postgres
+        state: present
+        wait: true
+        wait_timeout: 120
+
+    - name: Create and verify a safety backup of the current database
+      ansible.builtin.include_role:
+        name: sahabino_backup
+        tasks_from: run
+      vars:
+        sahabino_backup_kind: restore-safety
+        sahabino_backup_label: before-restore
+
+    - name: Require the verified restore safety backup
+      ansible.builtin.assert:
+        that:
+          - sahabino_created_backup_path is defined
+        fail_msg: The safety backup was not created; restore is aborted before replacing the database.
+
+    - name: Identify the PostgreSQL container
+      ansible.builtin.command:
+        argv: "{{ sahabino_restore_compose_cli + ['ps', '--quiet', 'postgres'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+      register: sahabino_restore_postgres_container_command
+      changed_when: false
+      failed_when: sahabino_restore_postgres_container_command.stdout | trim | length == 0
+
+    - name: Record the PostgreSQL container ID
+      ansible.builtin.set_fact:
+        sahabino_restore_postgres_container: >-
+          {{ sahabino_restore_postgres_container_command.stdout | trim }}
+
+    - name: Read the active PostgreSQL user from the container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - printenv
+          - POSTGRES_USER
+      register: sahabino_restore_postgres_user_command
+      changed_when: false
+
+    - name: Read the active PostgreSQL database from the container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - printenv
+          - POSTGRES_DB
+      register: sahabino_restore_postgres_db_command
+      changed_when: false
+
+    - name: Record and validate the active database identity
+      ansible.builtin.set_fact:
+        sahabino_restore_postgres_user: "{{ sahabino_restore_postgres_user_command.stdout | trim }}"
+        sahabino_restore_postgres_db: "{{ sahabino_restore_postgres_db_command.stdout | trim }}"
+
+    - name: Require a safe non-empty active database identity
+      ansible.builtin.assert:
+        that:
+          - sahabino_restore_postgres_user is match("^[A-Za-z0-9_.-]+$")
+          - sahabino_restore_postgres_db is match("^[A-Za-z0-9_.-]+$")
+        fail_msg: The running PostgreSQL container has an invalid database identity.
+
+    - name: Copy the requested dump into the PostgreSQL container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - cp
+          - "{{ sahabino_restore_staged_path }}"
+          - "{{ sahabino_restore_postgres_container }}:{{ sahabino_restore_container_path }}"
+      changed_when: true
+
+    - name: Drop the current database and terminate its remaining connections
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - dropdb
+          - --if-exists
+          - --force
+          - --username
+          - "{{ sahabino_restore_postgres_user }}"
+          - "{{ sahabino_restore_postgres_db }}"
+      changed_when: true
+
+    - name: Recreate the production database from template0
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - createdb
+          - --template
+          - template0
+          - --owner
+          - "{{ sahabino_restore_postgres_user }}"
+          - --username
+          - "{{ sahabino_restore_postgres_user }}"
+          - "{{ sahabino_restore_postgres_db }}"
+      changed_when: true
+
+    - name: Restore the requested PostgreSQL custom-format dump
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - pg_restore
+          - --exit-on-error
+          - --no-owner
+          - --no-privileges
+          - --username
+          - "{{ sahabino_restore_postgres_user }}"
+          - --dbname
+          - "{{ sahabino_restore_postgres_db }}"
+          - "{{ sahabino_restore_container_path }}"
+      changed_when: true
+
+    - name: Read the checked-out Alembic head after restore
+      ansible.builtin.command:
+        argv: >-
+          {{ sahabino_restore_compose_cli + [
+            'run', '--rm', '--no-deps', 'api',
+            'uv', 'run', '--no-sync', 'alembic', 'heads'
+          ] }}
+        chdir: "{{ sahabino_app_dir }}"
+      register: sahabino_restore_code_heads
+      changed_when: false
+
+    - name: Read the restored database Alembic revision
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --username
+          - "{{ sahabino_restore_postgres_user }}"
+          - --dbname
+          - "{{ sahabino_restore_postgres_db }}"
+          - --command
+          - SELECT version_num FROM alembic_version;
+      register: sahabino_restore_database_head
+      changed_when: false
+
+    - name: Verify the restored database migration state
+      ansible.builtin.assert:
+        that:
+          - sahabino_restore_database_head.stdout | trim | length > 0
+          - (sahabino_restore_database_head.stdout | trim) in sahabino_restore_code_heads.stdout
+        fail_msg: >-
+          The restored database revision does not match the checked-out code.
+          Application services remain stopped.
+
+    - name: Restart the database-writing application services
+      community.docker.docker_compose_v2:
+        project_src: "{{ sahabino_app_dir }}"
+        files: "{{ sahabino_compose_files }}"
+        env_files:
+          - .env
+        project_name: "{{ sahabino_compose_project_name }}"
+        profiles: "{{ sahabino_compose_profiles }}"
+        services: "{{ sahabino_database_writers }}"
+        state: present
+        wait: true
+        wait_timeout: 120
+
+    - name: Verify API health after restore
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ sahabino_api_port }}/docs"
+        method: GET
+        status_code: 200
+      register: sahabino_restore_api_health
+      retries: "{{ sahabino_healthcheck_retries }}"
+      delay: "{{ sahabino_healthcheck_delay_seconds }}"
+      until: sahabino_restore_api_health.status == 200
+  always:
+    - name: Remove the dump copy from the PostgreSQL container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ sahabino_restore_postgres_container }}"
+          - rm
+          - --force
+          - --
+          - "{{ sahabino_restore_container_path }}"
+      changed_when: true
+      failed_when: false
+      when: sahabino_restore_postgres_container is defined
+
+    - name: Remove the host-side staged restore copy
+      ansible.builtin.file:
+        path: "{{ sahabino_restore_staged_path }}"
+        state: absent

@@ -1,0 +1,36 @@
+---
+- name: Deploy an explicit Sahabino Git revision
+  hosts: production
+  become: true
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Run pre-deployment checks
+      ansible.builtin.include_role:
+        name: sahabino_deploy
+        tasks_from: preflight
+
+    - name: Back up PostgreSQL before changing the checked-out revision
+      ansible.builtin.include_role:
+        name: sahabino_backup
+        tasks_from: pre_deploy
+
+    - name: Fetch and check out the requested revision
+      ansible.builtin.include_role:
+        name: sahabino_deploy
+        tasks_from: checkout
+
+    - name: Render and validate production configuration
+      ansible.builtin.include_role:
+        name: sahabino_deploy
+        tasks_from: configure
+
+    - name: Build, migrate, provision topics, and update services
+      ansible.builtin.include_role:
+        name: sahabino_deploy
+        tasks_from: release
+
+    - name: Verify and record the successful deployment
+      ansible.builtin.include_role:
+        name: sahabino_deploy
+        tasks_from: verify
