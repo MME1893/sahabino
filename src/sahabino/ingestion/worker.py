@@ -13,6 +13,11 @@ from sahabino.ingestion.repository import IngestionRepository
 from sahabino.messaging.consumer import KafkaConsumer
 from sahabino.messaging.events import EventEnvelope, deserialize_event
 from sahabino.messaging.exceptions import EventDeserializationError
+from sahabino.messaging.network_events import (
+    NETWORK_ANALYSIS_COLLECTED_EVENT_TYPE,
+    NETWORK_SCHEMA_VERSION,
+    NetworkAnalysisCollectedV1,
+)
 from sahabino.messaging.playstore_events import (
     APP_STATS_EVENT_TYPE,
     PLAYSTORE_SCHEMA_VERSION,
@@ -21,6 +26,7 @@ from sahabino.messaging.playstore_events import (
     ReviewObservedV1,
 )
 from sahabino.messaging.topics import (
+    NETWORK_ANALYSIS_COLLECTED_TOPIC,
     PLAYSTORE_APP_STATS_TOPIC,
     PLAYSTORE_REVIEW_OBSERVED_TOPIC,
 )
@@ -67,12 +73,21 @@ def decode_message(message: Message) -> SupportedEvent:
     schema_version = raw.get("schema_version")
     if not isinstance(event_type, str) or not event_type:
         raise _invalid("invalid_envelope")
-    if event_type not in {APP_STATS_EVENT_TYPE, REVIEW_OBSERVED_EVENT_TYPE}:
+    if event_type not in {
+        APP_STATS_EVENT_TYPE,
+        REVIEW_OBSERVED_EVENT_TYPE,
+        NETWORK_ANALYSIS_COLLECTED_EVENT_TYPE,
+    }:
         raise _invalid("unsupported_event_type", event_type=event_type)
     if (
         not isinstance(schema_version, int)
         or isinstance(schema_version, bool)
-        or schema_version != PLAYSTORE_SCHEMA_VERSION
+        or schema_version
+        != (
+            NETWORK_SCHEMA_VERSION
+            if event_type == NETWORK_ANALYSIS_COLLECTED_EVENT_TYPE
+            else PLAYSTORE_SCHEMA_VERSION
+        )
     ):
         raise _invalid(
             "unsupported_schema_version",
@@ -80,11 +95,11 @@ def decode_message(message: Message) -> SupportedEvent:
             schema_version=schema_version,
         )
 
-    expected_topic = (
-        PLAYSTORE_APP_STATS_TOPIC
-        if event_type == APP_STATS_EVENT_TYPE
-        else PLAYSTORE_REVIEW_OBSERVED_TOPIC
-    )
+    expected_topic = {
+        APP_STATS_EVENT_TYPE: PLAYSTORE_APP_STATS_TOPIC,
+        REVIEW_OBSERVED_EVENT_TYPE: PLAYSTORE_REVIEW_OBSERVED_TOPIC,
+        NETWORK_ANALYSIS_COLLECTED_EVENT_TYPE: NETWORK_ANALYSIS_COLLECTED_TOPIC,
+    }[event_type]
     if message.topic() != expected_topic:
         raise _invalid(
             "topic_event_mismatch",
@@ -95,8 +110,10 @@ def decode_message(message: Message) -> SupportedEvent:
     try:
         if event_type == APP_STATS_EVENT_TYPE:
             event: SupportedEvent = deserialize_event(value, EventEnvelope[AppStatsCollectedV1])
-        else:
+        elif event_type == REVIEW_OBSERVED_EVENT_TYPE:
             event = deserialize_event(value, EventEnvelope[ReviewObservedV1])
+        else:
+            event = deserialize_event(value, EventEnvelope[NetworkAnalysisCollectedV1])
     except EventDeserializationError:
         raise _invalid(
             "invalid_envelope_or_payload",
@@ -170,13 +187,21 @@ class IngestionWorker:
             self._commit_offset(message, message_context)
             return True
 
-        event_context = {
+        event_context: dict[str, object] = {
             **message_context,
             "event_id": str(event.event_id),
             "event_type": event.event_type,
             "application_id": str(event.payload.application_id),
-            "crawl_task_id": str(event.payload.crawl_task_id),
         }
+        crawl_task_id = getattr(event.payload, "crawl_task_id", None)
+        capture_id = getattr(event.payload, "capture_id", None)
+        analysis_id = getattr(event.payload, "analysis_id", None)
+        if crawl_task_id is not None:
+            event_context["crawl_task_id"] = str(crawl_task_id)
+        if capture_id is not None:
+            event_context["capture_id"] = str(capture_id)
+        if analysis_id is not None:
+            event_context["analysis_id"] = str(analysis_id)
         try:
             with self._session_factory.begin() as session:
                 repository = IngestionRepository(session)

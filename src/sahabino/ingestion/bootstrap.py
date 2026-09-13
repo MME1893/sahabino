@@ -10,12 +10,17 @@ from sahabino.db.sync_session import create_sync_session_factory
 from sahabino.ingestion.worker import IngestionWorker
 from sahabino.messaging.consumer import KafkaConsumer
 from sahabino.messaging.topics import (
+    NETWORK_ANALYSIS_COLLECTED_TOPIC,
     PLAYSTORE_APP_STATS_TOPIC,
     PLAYSTORE_REVIEW_OBSERVED_TOPIC,
 )
 
 SERVICE_NAME = "sahabino-ingestion"
-INGESTION_TOPICS = (PLAYSTORE_APP_STATS_TOPIC, PLAYSTORE_REVIEW_OBSERVED_TOPIC)
+INGESTION_TOPICS = (
+    PLAYSTORE_APP_STATS_TOPIC,
+    PLAYSTORE_REVIEW_OBSERVED_TOPIC,
+    NETWORK_ANALYSIS_COLLECTED_TOPIC,
+)
 
 
 def build_worker(settings: Settings) -> IngestionWorker:

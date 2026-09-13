@@ -6,6 +6,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from sahabino.app_registry.models import Application
 from sahabino.crawler.infrastructure.persistence.models import CrawlTask
 from sahabino.ingestion.exceptions import IngestionConsistencyError
 from sahabino.ingestion.models import (
@@ -14,7 +15,9 @@ from sahabino.ingestion.models import (
     Review,
     ReviewObservation,
 )
+from sahabino.messaging.network_events import NetworkAnalysisCollectedV1
 from sahabino.messaging.playstore_events import AppStatsCollectedV1, ReviewObservedV1
+from sahabino.network.models import NetworkAnalysisResult, NetworkCapture
 
 
 class IngestionRepository:
@@ -157,3 +160,126 @@ class IngestionRepository:
             )
         )
         self._session.execute(statement)
+
+    def validate_network_analysis(self, payload: NetworkAnalysisCollectedV1) -> None:
+        row = self._session.execute(
+            select(NetworkCapture, Application.package_name)
+            .join(Application, Application.id == NetworkCapture.application_id)
+            .where(NetworkCapture.id == payload.capture_id)
+        ).one_or_none()
+        if row is None:
+            raise IngestionConsistencyError("network capture does not exist")
+        capture, package_name = row
+        if (
+            capture.analysis_id != payload.analysis_id
+            or capture.application_id != payload.application_id
+            or package_name != payload.package_name
+            or capture.scenario != payload.scenario
+            or capture.verified_sha256 != payload.verified_sha256
+        ):
+            raise IngestionConsistencyError(
+                "network analysis does not match capture and application state"
+            )
+
+    def insert_network_analysis(self, payload: NetworkAnalysisCollectedV1) -> None:
+        values: dict[str, object] = {
+            "analysis_id": payload.analysis_id,
+            "capture_id": payload.capture_id,
+            "application_id": payload.application_id,
+            "package_name": payload.package_name,
+            "scenario": payload.scenario,
+            "analyzed_at": payload.analyzed_at,
+            "analyzer_version": payload.analyzer_version,
+            "tshark_version": payload.tshark_version,
+            "source_analyzer": payload.source_analyzer,
+            "verified_sha256": payload.verified_sha256,
+            **payload.capture.model_dump(exclude={"analysis_warnings"}),
+            **payload.capabilities.model_dump(),
+            **payload.traffic.model_dump(),
+            **payload.protocol_mix.model_dump(),
+            **payload.ip.model_dump(),
+            **payload.flow.model_dump(),
+            **payload.transfer.model_dump(),
+            "analysis_warnings": list(payload.capture.analysis_warnings),
+        }
+        for model_name in ("tcp", "quic", "udp", "dns"):
+            model = getattr(payload, model_name)
+            if model is not None:
+                model_values = model.model_dump()
+                if model_name == "quic":
+                    model_values["quic_versions_seen"] = (
+                        list(model.quic_versions_seen)
+                        if model.quic_versions_seen is not None
+                        else None
+                    )
+                values.update(model_values)
+                continue
+            # The flattened relational shape uses NULL for an inapplicable metric group.
+            names: tuple[str, ...]
+            if model_name == "tcp":
+                names = (
+                    "tcp_connection_count",
+                    "tcp_successful_handshake_count",
+                    "tcp_incomplete_handshake_count",
+                    "tcp_handshake_success_rate",
+                    "tcp_initial_rtt_avg_ms",
+                    "tcp_initial_rtt_p50_ms",
+                    "tcp_initial_rtt_p95_ms",
+                    "tcp_ack_rtt_min_ms",
+                    "tcp_ack_rtt_p50_ms",
+                    "tcp_ack_rtt_p95_ms",
+                    "tcp_rtt_tail_inflation",
+                    "tcp_data_segment_count",
+                    "tcp_retransmission_count",
+                    "tcp_fast_retransmission_count",
+                    "tcp_spurious_retransmission_count",
+                    "tcp_retransmitted_payload_bytes",
+                    "tcp_retransmission_rate",
+                    "tcp_recovery_tax",
+                    "tcp_zero_window_count",
+                    "tcp_window_full_count",
+                    "tcp_zero_window_duration_ms",
+                    "tcp_active_duration_ms",
+                    "tcp_receiver_stall_ratio",
+                    "tcp_reset_count",
+                    "tcp_reset_rate",
+                    "tcp_out_of_order_count",
+                    "tcp_duplicate_ack_count",
+                    "tcp_lost_segment_indicator_count",
+                )
+            elif model_name == "quic":
+                names = (
+                    "quic_identified_connection_count",
+                    "quic_version_count",
+                    "quic_versions_seen",
+                    "quic_retry_count",
+                    "quic_version_negotiation_count",
+                    "quic_0rtt_observed_count",
+                    "quic_initial_rtt_avg_ms",
+                    "quic_initial_rtt_p50_ms",
+                    "quic_initial_rtt_p95_ms",
+                    "quic_spin_rtt_sample_count",
+                    "quic_spin_rtt_min_ms",
+                    "quic_spin_rtt_p50_ms",
+                    "quic_spin_rtt_p95_ms",
+                )
+            elif model_name == "udp":
+                names = (
+                    "udp_flow_count",
+                    "udp_datagram_count",
+                    "udp_network_bytes",
+                    "udp_payload_bytes",
+                    "udp_payload_size_p50",
+                    "udp_payload_size_p95",
+                    "udp_bidirectional_byte_ratio",
+                )
+            else:
+                names = (
+                    "dns_query_count",
+                    "dns_response_count",
+                    "dns_failure_count",
+                    "dns_rtt_p50_ms",
+                    "dns_rtt_p95_ms",
+                )
+            values.update(dict.fromkeys(names))
+        self._session.execute(insert(NetworkAnalysisResult).values(**values))

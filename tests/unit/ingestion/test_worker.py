@@ -26,6 +26,7 @@ from sahabino.messaging.playstore_events import (
     review_observed_envelope,
 )
 from sahabino.messaging.topics import (
+    NETWORK_ANALYSIS_COLLECTED_TOPIC,
     PLAYSTORE_APP_STATS_TOPIC,
     PLAYSTORE_REVIEW_OBSERVED_TOPIC,
 )
@@ -456,7 +457,7 @@ def test_bootstrap_configures_ingestion_service_name(monkeypatch: pytest.MonkeyP
     assert configured["service_name"] == "sahabino-ingestion"
 
 
-def test_bootstrap_builds_one_consumer_for_both_playstore_topics(
+def test_bootstrap_builds_one_consumer_for_all_ingestion_topics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = bootstrap_module.Settings(
@@ -472,7 +473,7 @@ def test_bootstrap_builds_one_consumer_for_both_playstore_topics(
             cls,
             selected_settings: object,
             group_id: str,
-            topics: tuple[str, str],
+            topics: tuple[str, ...],
         ) -> object:
             captured.update(
                 settings=selected_settings,
@@ -492,5 +493,9 @@ def test_bootstrap_builds_one_consumer_for_both_playstore_topics(
     assert captured == {
         "settings": settings,
         "group_id": "custom-group",
-        "topics": (PLAYSTORE_APP_STATS_TOPIC, PLAYSTORE_REVIEW_OBSERVED_TOPIC),
+        "topics": (
+            PLAYSTORE_APP_STATS_TOPIC,
+            PLAYSTORE_REVIEW_OBSERVED_TOPIC,
+            NETWORK_ANALYSIS_COLLECTED_TOPIC,
+        ),
     }
