@@ -1,0 +1,17 @@
+[Unit]
+Description=Sahabino daily PostgreSQL custom-format backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile={{ sahabino_backup_environment_file }}
+ExecStart={{ sahabino_backup_executable }} scheduled
+User=root
+Group=root
+UMask=0077
+Nice=10
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ sahabino_backup_dir }}

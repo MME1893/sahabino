@@ -1,0 +1,14 @@
+---
+sahabino_compose_cli:
+  - docker
+  - compose
+  - --project-name
+  - "{{ sahabino_compose_project_name }}"
+  - --env-file
+  - .env
+  - --file
+  - docker-compose.yml
+  - --file
+  - compose.prod.yml
+  - --profile
+  - observability

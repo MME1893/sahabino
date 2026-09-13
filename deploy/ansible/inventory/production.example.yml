@@ -1,0 +1,9 @@
+---
+all:
+  children:
+    production:
+      hosts:
+        sahabino-production:
+          ansible_host: 203.0.113.10
+          ansible_user: sahabino
+          ansible_become: true

@@ -1,0 +1,127 @@
+---
+- name: Build the application images from the checked-out revision
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['build', '--pull'] + sahabino_application_services }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Stop database-writing application services before migration
+  community.docker.docker_compose_v2:
+    project_src: "{{ sahabino_app_dir }}"
+    files: "{{ sahabino_compose_files }}"
+    env_files:
+      - .env
+    project_name: "{{ sahabino_compose_project_name }}"
+    profiles: "{{ sahabino_compose_profiles }}"
+    services: "{{ sahabino_database_writers }}"
+    state: stopped
+
+- name: Start PostgreSQL and Kafka and wait for Compose health checks
+  community.docker.docker_compose_v2:
+    project_src: "{{ sahabino_app_dir }}"
+    files: "{{ sahabino_compose_files }}"
+    env_files:
+      - .env
+    project_name: "{{ sahabino_compose_project_name }}"
+    profiles: "{{ sahabino_compose_profiles }}"
+    services: "{{ sahabino_infrastructure_services }}"
+    state: present
+    wait: true
+    wait_timeout: 120
+
+- name: Verify PostgreSQL readiness explicitly
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'exec', '-T', 'postgres', 'pg_isready', '--quiet',
+        '--username', vault_sahabino_postgres_user,
+        '--dbname', vault_sahabino_postgres_db
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_postgres_ready
+  changed_when: false
+  retries: "{{ sahabino_healthcheck_retries }}"
+  delay: "{{ sahabino_healthcheck_delay_seconds }}"
+  until: sahabino_postgres_ready.rc == 0
+
+- name: Verify Kafka readiness explicitly
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'exec', '-T', 'kafka',
+        '/opt/kafka/bin/kafka-broker-api-versions.sh',
+        '--bootstrap-server', 'localhost:19092'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_kafka_ready
+  changed_when: false
+  retries: "{{ sahabino_healthcheck_retries }}"
+  delay: "{{ sahabino_healthcheck_delay_seconds }}"
+  until: sahabino_kafka_ready.rc == 0
+
+- name: Apply Alembic migrations explicitly
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'run', '--rm', '--no-deps', 'api',
+        'uv', 'run', '--no-sync', 'alembic', 'upgrade', 'head'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_alembic_upgrade
+  changed_when: true
+
+- name: Read the Alembic code head
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'run', '--rm', '--no-deps', 'api',
+        'uv', 'run', '--no-sync', 'alembic', 'heads'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_alembic_code_heads
+  changed_when: false
+
+- name: Read the database Alembic revision
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'exec', '-T', 'postgres', 'psql', '--no-psqlrc',
+        '--tuples-only', '--no-align',
+        '--username', vault_sahabino_postgres_user,
+        '--dbname', vault_sahabino_postgres_db,
+        '--command', 'SELECT version_num FROM alembic_version;'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_alembic_database_head
+  changed_when: false
+
+- name: Verify the database is at the checked-out Alembic head
+  ansible.builtin.assert:
+    that:
+      - sahabino_alembic_database_head.stdout | trim | length > 0
+      - (sahabino_alembic_database_head.stdout | trim) in sahabino_alembic_code_heads.stdout
+    fail_msg: The database Alembic revision does not match the checked-out code head.
+
+- name: Provision and verify the required Kafka topic topology
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'run', '--rm', '--no-deps', 'api',
+        'uv', 'run', '--no-sync', 'python', '-m', 'sahabino.messaging.admin'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_kafka_topics
+  changed_when: "'Created Kafka topics:' in sahabino_kafka_topics.stdout"
+
+- name: Start or update application and observability services
+  community.docker.docker_compose_v2:
+    project_src: "{{ sahabino_app_dir }}"
+    files: "{{ sahabino_compose_files }}"
+    env_files:
+      - .env
+    project_name: "{{ sahabino_compose_project_name }}"
+    profiles: "{{ sahabino_compose_profiles }}"
+    services: "{{ sahabino_application_services + sahabino_observability_services }}"
+    state: present
+    wait: true
+    wait_timeout: 120

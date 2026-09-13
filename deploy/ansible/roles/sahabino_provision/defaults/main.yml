@@ -1,0 +1,4 @@
+---
+sahabino_provision_packages:
+  - git
+  - postgresql-client

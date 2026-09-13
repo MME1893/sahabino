@@ -1,0 +1,101 @@
+---
+- name: Verify the supported production operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      - ansible_distribution_version is version("24.04", ">=")
+    fail_msg: This provisioning role supports Ubuntu 24.04 or newer.
+
+- name: Verify Docker Engine is already installed and reachable
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+  changed_when: false
+
+- name: Verify Docker Compose v2 is already installed
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - version
+  changed_when: false
+
+- name: Verify the deployment account already exists
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ sahabino_deploy_user }}"
+
+- name: Install Sahabino host-side deployment dependencies
+  ansible.builtin.apt:
+    name: "{{ sahabino_provision_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the Sahabino application parent directory
+  ansible.builtin.file:
+    path: "{{ sahabino_app_parent_dir }}"
+    state: directory
+    owner: "{{ sahabino_deploy_user }}"
+    group: "{{ sahabino_deploy_group }}"
+    mode: "0750"
+
+- name: Create the PostgreSQL backup directory
+  ansible.builtin.file:
+    path: "{{ sahabino_backup_dir }}"
+    state: directory
+    owner: root
+    group: "{{ sahabino_deploy_group }}"
+    mode: "0750"
+
+- name: Create the Sahabino system configuration directory
+  ansible.builtin.file:
+    path: /etc/sahabino
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the PostgreSQL backup environment file
+  ansible.builtin.template:
+    src: postgres-backup.env.j2
+    dest: "{{ sahabino_backup_environment_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Install the PostgreSQL backup executable
+  ansible.builtin.template:
+    src: sahabino-postgres-backup.j2
+    dest: "{{ sahabino_backup_executable }}"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the daily PostgreSQL backup service
+  ansible.builtin.template:
+    src: sahabino-postgres-backup.service.j2
+    dest: /etc/systemd/system/sahabino-postgres-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install the daily PostgreSQL backup timer
+  ansible.builtin.template:
+    src: sahabino-postgres-backup.timer.j2
+    dest: /etc/systemd/system/sahabino-postgres-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Apply systemd unit changes before enabling the timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the daily PostgreSQL backup timer
+  ansible.builtin.systemd_service:
+    name: sahabino-postgres-backup.timer
+    enabled: true
+    state: started

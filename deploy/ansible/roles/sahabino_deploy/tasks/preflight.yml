@@ -1,0 +1,147 @@
+---
+- name: Require an explicit deployment revision and safe production parameters
+  ansible.builtin.assert:
+    that:
+      - sahabino_deploy_revision | trim | length > 0
+      - sahabino_repository_url | trim | length > 0
+      - sahabino_repository_url is not search("OWNER/REPOSITORY")
+      - sahabino_api_port | int not in [80, 443]
+      - sahabino_backup_retention_days | int >= 0
+      - sahabino_log_level in ["INFO", "WARNING", "ERROR", "CRITICAL"]
+    fail_msg: Supply an explicit revision and review the production group variables.
+
+- name: Require all production secret variables
+  ansible.builtin.assert:
+    that:
+      - vault_sahabino_postgres_db is defined
+      - vault_sahabino_postgres_user is defined
+      - vault_sahabino_postgres_password is defined
+      - vault_sahabino_grafana_admin_user is defined
+      - vault_sahabino_grafana_admin_password is defined
+      - vault_sahabino_object_storage_access_key is defined
+      - vault_sahabino_object_storage_secret_key is defined
+      - vault_sahabino_playstore_proxy_urls is defined
+    fail_msg: Create and encrypt group_vars/production/vault.yml from its example.
+
+- name: Reject placeholder or dotenv-unsafe production secrets
+  ansible.builtin.assert:
+    that:
+      - vault_sahabino_postgres_db is match("^[A-Za-z0-9_.-]+$")
+      - vault_sahabino_postgres_user is match("^[A-Za-z0-9_.-]+$")
+      - vault_sahabino_postgres_password is match("^[A-Za-z0-9_.-]{20,}$")
+      - vault_sahabino_grafana_admin_user is match("^[A-Za-z0-9_.@-]+$")
+      - vault_sahabino_grafana_admin_password is match("^[A-Za-z0-9_.-]{20,}$")
+      - vault_sahabino_object_storage_access_key is match("^[A-Za-z0-9_.-]{12,}$")
+      - vault_sahabino_object_storage_secret_key is match("^[A-Za-z0-9_.-]{20,}$")
+      - "'CHANGE_ME' not in vault_sahabino_postgres_password"
+      - "'CHANGE_ME' not in vault_sahabino_grafana_admin_password"
+      - "'CHANGE_ME' not in vault_sahabino_object_storage_access_key"
+      - "'CHANGE_ME' not in vault_sahabino_object_storage_secret_key"
+    fail_msg: Replace placeholders with long URL-safe values (letters, digits, dot, underscore, hyphen).
+  no_log: true
+
+- name: Verify Docker Engine is reachable
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+  changed_when: false
+
+- name: Read the Docker Compose v2 version
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - version
+      - --short
+  register: sahabino_compose_version_command
+  changed_when: false
+
+- name: Extract the Docker Compose semantic version
+  ansible.builtin.set_fact:
+    sahabino_compose_version: >-
+      {{ sahabino_compose_version_command.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') }}
+
+- name: Require Compose support for the production override tags
+  ansible.builtin.assert:
+    that:
+      - sahabino_compose_version is version("2.24.4", ">=")
+    fail_msg: Docker Compose 2.24.4 or newer is required for the !override merge tag.
+
+- name: Verify the provisioned backup executable exists
+  ansible.builtin.stat:
+    path: "{{ sahabino_backup_executable }}"
+  register: sahabino_backup_executable_stat
+
+- name: Require provisioning before deployment
+  ansible.builtin.assert:
+    that:
+      - sahabino_backup_executable_stat.stat.exists
+      - sahabino_backup_executable_stat.stat.executable | default(false)
+    fail_msg: Run provision.yml before the first deployment.
+
+- name: Check whether the application directory exists
+  ansible.builtin.stat:
+    path: "{{ sahabino_app_dir }}"
+  register: sahabino_app_dir_stat
+
+- name: Check whether an existing application directory is a Git checkout
+  ansible.builtin.stat:
+    path: "{{ sahabino_app_dir }}/.git"
+  register: sahabino_app_git_stat
+  when: sahabino_app_dir_stat.stat.exists
+
+- name: Check whether a non-Git application directory is empty
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ sahabino_app_dir }}"
+      - -mindepth
+      - "1"
+      - -maxdepth
+      - "1"
+      - -print
+      - -quit
+  register: sahabino_app_dir_contents
+  changed_when: false
+  when:
+    - sahabino_app_dir_stat.stat.exists
+    - not (sahabino_app_git_stat.stat.exists | default(false))
+
+- name: Refuse to overwrite a non-Git application directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not sahabino_app_dir_stat.stat.exists
+        or (sahabino_app_git_stat.stat.exists | default(false))
+        or (sahabino_app_dir_contents.stdout | default('') | length == 0)
+    fail_msg: "{{ sahabino_app_dir }} exists, is non-empty, and is not a Git checkout."
+
+- name: Inspect the existing checkout for local changes
+  ansible.builtin.command:
+    argv:
+      - git
+      - status
+      - --porcelain
+    chdir: "{{ sahabino_app_dir }}"
+  become_user: "{{ sahabino_deploy_user }}"
+  register: sahabino_existing_git_status
+  changed_when: false
+  when: sahabino_app_git_stat.stat.exists | default(false)
+
+- name: Refuse to overwrite server-side repository changes
+  ansible.builtin.assert:
+    that:
+      - sahabino_existing_git_status.stdout | default('') | length == 0
+    fail_msg: The server checkout has local changes; reconcile them before deployment.
+
+- name: Verify read-only access through the configured Git remote
+  ansible.builtin.command:
+    argv:
+      - git
+      - ls-remote
+      - --exit-code
+      - "{{ sahabino_repository_url }}"
+  become_user: "{{ sahabino_deploy_user }}"
+  changed_when: false
+  no_log: true

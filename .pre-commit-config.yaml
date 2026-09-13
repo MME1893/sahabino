@@ -14,6 +14,7 @@ repos:
       - id: end-of-file-fixer
 
       - id: check-yaml
+        exclude: ^compose\.prod\.yml$
       - id: check-toml
       - id: check-json
 

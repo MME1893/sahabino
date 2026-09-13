@@ -1,0 +1,39 @@
+---
+- name: Fetch the repository and check out exactly the requested revision
+  ansible.builtin.git:
+    repo: "{{ sahabino_repository_url }}"
+    dest: "{{ sahabino_app_dir }}"
+    version: "{{ sahabino_deploy_revision }}"
+    update: true
+    force: false
+    recursive: false
+    track_submodules: false
+  become_user: "{{ sahabino_deploy_user }}"
+  register: sahabino_git_checkout
+
+- name: Resolve the deployed commit SHA
+  ansible.builtin.command:
+    argv:
+      - git
+      - rev-parse
+      - HEAD
+    chdir: "{{ sahabino_app_dir }}"
+  become_user: "{{ sahabino_deploy_user }}"
+  register: sahabino_resolved_revision_command
+  changed_when: false
+
+- name: Record the resolved commit SHA for the rest of this deployment
+  ansible.builtin.set_fact:
+    sahabino_resolved_revision: "{{ sahabino_resolved_revision_command.stdout | trim }}"
+
+- name: Verify the checked-out repository is clean
+  ansible.builtin.command:
+    argv:
+      - git
+      - status
+      - --porcelain
+    chdir: "{{ sahabino_app_dir }}"
+  become_user: "{{ sahabino_deploy_user }}"
+  register: sahabino_checked_out_git_status
+  changed_when: false
+  failed_when: sahabino_checked_out_git_status.stdout | length > 0

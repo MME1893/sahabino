@@ -1,0 +1,10 @@
+---
+- name: Create a manual Sahabino PostgreSQL backup
+  hosts: production
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run and verify the manual backup
+      ansible.builtin.include_role:
+        name: sahabino_backup
+        tasks_from: manual

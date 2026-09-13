@@ -1,0 +1,88 @@
+---
+sahabino_deploy_user: sahabino
+sahabino_deploy_group: sahabino
+
+sahabino_repository_url: git@github-sahabino:MME1893/sahabino.git
+sahabino_deploy_revision: ""
+sahabino_app_parent_dir: /opt/sahabino
+sahabino_app_dir: /opt/sahabino/app
+# Use one explicit project identity for Compose labels, containers, networks,
+# and named volumes (for example, sahabino_postgres_data).
+sahabino_compose_project_name: sahabino
+sahabino_compose_files:
+  - docker-compose.yml
+  - compose.prod.yml
+sahabino_compose_profiles:
+  - observability
+
+sahabino_infrastructure_services:
+  - postgres
+  - kafka
+sahabino_application_services:
+  - api
+  - ingestion
+  - crawler
+sahabino_observability_services:
+  - loki
+  - alloy
+  - grafana
+sahabino_database_writers: "{{ sahabino_application_services }}"
+
+sahabino_api_bind_address: 0.0.0.0
+sahabino_api_port: 8000
+sahabino_log_level: INFO
+sahabino_healthcheck_retries: 30
+sahabino_healthcheck_delay_seconds: 2
+
+sahabino_backup_dir: /var/backups/sahabino/postgres
+sahabino_backup_retention_days: 14
+sahabino_backup_schedule: "*-*-* 02:30:00 UTC"
+sahabino_backup_randomized_delay: 15m
+sahabino_backup_remote_enabled: false
+sahabino_backup_executable: /usr/local/sbin/sahabino-postgres-backup
+sahabino_backup_environment_file: /etc/sahabino/postgres-backup.env
+
+sahabino_kafka_topic_partitions: 3
+sahabino_kafka_topic_replication_factor: 1
+sahabino_kafka_consumer_auto_offset_reset: earliest
+sahabino_ingestion_consumer_group_id: sahabino-ingestion-v1
+sahabino_network_analyzer_consumer_group_id: sahabino-network-analyzer-v1
+sahabino_kafka_producer_queue_full_max_retries: 3
+sahabino_kafka_producer_queue_full_poll_timeout_seconds: 0.1
+
+# Local SeaweedFS on the Sahabino VPS, accessed through its S3-compatible API.
+# No Amazon S3 or other remote object-storage service is configured here.
+sahabino_object_storage_endpoint_url: http://seaweedfs:8333
+# Embedded in presigned URLs. Loopback keeps SeaweedFS private; remote clients
+# can reach it through an SSH tunnel when the optional network profile is used.
+sahabino_object_storage_public_endpoint_url: http://127.0.0.1:8333
+# A logical bucket stored in the local seaweedfs_data Docker named volume.
+sahabino_object_storage_bucket: sahabino-network-captures
+# AWS Signature V4 compatibility value only; this is not an AWS storage region.
+sahabino_object_storage_region: us-east-1
+sahabino_object_storage_presign_expiry_seconds: 900
+sahabino_object_storage_max_capture_size_bytes: 2147483648
+sahabino_network_tshark_path: tshark
+sahabino_network_tshark_timeout_seconds: 120
+sahabino_network_pending_upload_expiry_seconds: 3600
+sahabino_network_stale_analysis_seconds: 1800
+
+sahabino_playstore_crawl_interval_minutes: 60
+sahabino_playstore_max_concurrent_apps: 3
+sahabino_playstore_language_code: en
+sahabino_playstore_country_code: us
+sahabino_playstore_request_timeout_seconds: 20
+sahabino_playstore_retry_max_attempts: 3
+sahabino_playstore_retry_max_delay_seconds: 30
+sahabino_playstore_rate_limit_enabled: true
+sahabino_playstore_rate_limit_refill_per_second: 1.0
+sahabino_playstore_rate_limit_burst_capacity: 2
+sahabino_playstore_proxy_enabled: false
+sahabino_playstore_proxy_direct_fallback: true
+sahabino_playstore_proxy_failure_threshold: 2
+sahabino_playstore_proxy_cooldown_seconds: 60
+sahabino_playstore_proxy_rate_limit_rotate_after: 2
+sahabino_playstore_circuit_breaker_enabled: true
+sahabino_playstore_circuit_breaker_failure_threshold: 5
+sahabino_playstore_circuit_breaker_cooldown_seconds: 60
+sahabino_playstore_secondary_adapter_enabled: true

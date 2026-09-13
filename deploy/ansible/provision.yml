@@ -1,0 +1,7 @@
+---
+- name: Provision the Sahabino production host
+  hosts: production
+  become: true
+  gather_facts: true
+  roles:
+    - role: sahabino_provision
