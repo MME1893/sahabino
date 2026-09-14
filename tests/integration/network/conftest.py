@@ -47,6 +47,12 @@ def _selector_loop_factory() -> asyncio.AbstractEventLoop:
     return asyncio.SelectorEventLoop(selectors.SelectSelector())
 
 
+if sys.platform == "win32":
+
+    def pytest_asyncio_loop_factories() -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
+        return {"selector": _selector_loop_factory}
+
+
 @pytest.fixture(scope="session")
 def network_database_url() -> Iterator[str]:
     supplied = os.getenv("TEST_DATABASE_URL")
