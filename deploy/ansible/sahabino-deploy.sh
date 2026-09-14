@@ -22,7 +22,7 @@ umask 077
 # lose arguments or shell quoting.
 ORIGINAL_ARGS=("$@")
 
-ASSISTANT_VERSION="2026.09.14.3"
+ASSISTANT_VERSION="2026.09.14.4"
 PROGRAM_NAME="$(basename "$0")"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
@@ -48,7 +48,7 @@ RUNTIME_DIR="${SAHABINO_RUNTIME_DIR:-$APP_PARENT/runtime}"
 INVENTORY_FILE="${SAHABINO_INVENTORY_FILE:-$RUNTIME_DIR/production.inventory.yml}"
 
 COMPOSE_PROJECT_NAME="${SAHABINO_COMPOSE_PROJECT_NAME:-sahabino}"
-COMPOSE_PROFILE="${SAHABINO_COMPOSE_PROFILE:-observability}"
+COMPOSE_PROFILES=(observability network)
 API_BIND_ADDRESS="${SAHABINO_API_BIND_ADDRESS:-0.0.0.0}"
 API_PORT="${SAHABINO_API_PORT:-8000}"
 GRAFANA_PORT="${SAHABINO_GRAFANA_PORT:-3000}"
@@ -76,6 +76,10 @@ NO_REBOOT=0
 SKIP_DOCKER_MIGRATION=0
 ALLOW_UNSUPPORTED_OS="${SAHABINO_ALLOW_UNSUPPORTED_OS:-0}"
 CONFIRM_PUBLIC_API="${SAHABINO_CONFIRM_PUBLIC_API:-0}"
+OBJECT_STORAGE_EXPOSURE="${SAHABINO_OBJECT_STORAGE_EXPOSURE:-}"
+OBJECT_STORAGE_PUBLIC_ENDPOINT="${SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL:-}"
+CONFIRM_PUBLIC_OBJECT_STORAGE="${SAHABINO_CONFIRM_PUBLIC_OBJECT_STORAGE:-0}"
+ALLOW_ACTIVE_CRAWL_INTERRUPTION="${SAHABINO_ALLOW_ACTIVE_CRAWL_INTERRUPTION:-0}"
 REPOSITORY_URL_EXPLICIT=0
 [[ -n "${SAHABINO_REPOSITORY_URL:-}" ]] && REPOSITORY_URL_EXPLICIT=1
 
@@ -149,6 +153,14 @@ Options:
   --yes                      Accept safe/default choices where possible.
   --confirm-public-api       Explicitly acknowledge public API exposure when
                              production bind address is 0.0.0.0/::.
+  --object-storage-exposure MODE
+                             private (recommended) or public.
+  --object-storage-public-endpoint URL
+                             Required externally usable http(s) URL in public mode.
+  --confirm-public-object-storage
+                             Acknowledge unmanaged TLS, proxy, and firewall policy.
+  --allow-active-crawl-interruption
+                             Permit replacement after the bounded drain timeout.
   --allow-unsupported-os     Compatibility no-op; retained for older invocations.
   --no-reboot                Acknowledge a pending reboot warning. The assistant
                              never reboots the host automatically.
@@ -186,6 +198,10 @@ while [[ $# -gt 0 ]]; do
       REPOSITORY_URL="$2"; REPOSITORY_URL_EXPLICIT=1; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --confirm-public-api) CONFIRM_PUBLIC_API=1; shift ;;
+    --object-storage-exposure) OBJECT_STORAGE_EXPOSURE="${2:?value required}"; shift 2 ;;
+    --object-storage-public-endpoint) OBJECT_STORAGE_PUBLIC_ENDPOINT="${2:?value required}"; shift 2 ;;
+    --confirm-public-object-storage) CONFIRM_PUBLIC_OBJECT_STORAGE=1; shift ;;
+    --allow-active-crawl-interruption) ALLOW_ACTIVE_CRAWL_INTERRUPTION=1; shift ;;
     --allow-unsupported-os) ALLOW_UNSUPPORTED_OS=1; shift ;;  # backward-compatible; Ubuntu version no longer hard-blocks
     --no-reboot) NO_REBOOT=1; shift ;;
     --skip-docker-migration) SKIP_DOCKER_MIGRATION=1; shift ;;
@@ -1894,12 +1910,41 @@ confirm_api_exposure() {
   CONFIRM_PUBLIC_API=1
 }
 
+select_object_storage_exposure() {
+  [[ -z "$OBJECT_STORAGE_EXPOSURE" || "$OBJECT_STORAGE_EXPOSURE" == private || "$OBJECT_STORAGE_EXPOSURE" == public ]] || {
+    error "Object-storage exposure must be private or public."; return 1;
+  }
+  if [[ -z "$OBJECT_STORAGE_EXPOSURE" ]]; then
+    if (( ASSUME_YES )); then OBJECT_STORAGE_EXPOSURE=private
+    else
+      printf 'Object storage exposure:\n  1) Private / SSH tunnel (recommended)\n  2) Public endpoint\n'
+      read -r -p 'Selection [1]: ' choice
+      [[ "${choice:-1}" == 2 ]] && OBJECT_STORAGE_EXPOSURE=public || OBJECT_STORAGE_EXPOSURE=private
+    fi
+  fi
+  if [[ "$OBJECT_STORAGE_EXPOSURE" == private ]]; then
+    OBJECT_STORAGE_BIND_ADDRESS=127.0.0.1
+    OBJECT_STORAGE_PUBLIC_ENDPOINT=http://127.0.0.1:8333
+    return 0
+  fi
+  warn "Public object storage has no TLS or reverse proxy; this assistant does not manage the firewall."
+  [[ "$OBJECT_STORAGE_PUBLIC_ENDPOINT" =~ ^https?://[^/[:space:]]+(:[0-9]+)?$ ]] || {
+    error "Public mode requires an externally usable --object-storage-public-endpoint origin."; return 1;
+  }
+  if [[ "$CONFIRM_PUBLIC_OBJECT_STORAGE" != 1 ]]; then
+    (( ASSUME_YES )) && { error "Public mode requires --confirm-public-object-storage."; return 1; }
+    ask_yes_no "Expose SeaweedFS on port 8333 with those unmanaged responsibilities?" no || return 1
+  fi
+  OBJECT_STORAGE_BIND_ADDRESS=0.0.0.0
+}
+
 run_deploy() {
   local dir deploy_log rc
   dir=$(ansible_dir)
   ensure_vault_password_for_existing
   resolve_revision
   confirm_api_exposure
+  select_object_storage_exposure
   # resolve_revision has its own stage; reset it here so failures from the
   # playbook are attributed to the actual deployment rather than revision lookup.
   step "Production deployment"
@@ -1910,7 +1955,12 @@ run_deploy() {
     umask "$WORKTREE_UMASK"
     cd "$dir"
     env "ANSIBLE_COLLECTIONS_PATH=$ANSIBLE_COLLECTIONS_DIR" "$ANSIBLE_VENV/bin/ansible-playbook" \
-      -i "$INVENTORY_FILE" deploy.yml --vault-password-file "$VAULT_PASSWORD_FILE" -e "sahabino_deploy_revision=$TARGET_REVISION"
+      -i "$INVENTORY_FILE" deploy.yml --vault-password-file "$VAULT_PASSWORD_FILE" \
+      -e "sahabino_deploy_revision=$TARGET_REVISION" \
+      -e "sahabino_object_storage_exposure=$OBJECT_STORAGE_EXPOSURE" \
+      -e "sahabino_object_storage_bind_address=$OBJECT_STORAGE_BIND_ADDRESS" \
+      -e "sahabino_object_storage_public_endpoint_url=$OBJECT_STORAGE_PUBLIC_ENDPOINT" \
+      -e "sahabino_allow_active_crawl_interruption=$ALLOW_ACTIVE_CRAWL_INTERRUPTION"
   ) 2>&1 | tee -a "$RUN_LOG" "$deploy_log"
   rc=${PIPESTATUS[0]}; set -e
   if (( rc != 0 )); then diagnose_failure "$deploy_log" deploy; return "$rc"; fi
@@ -1954,8 +2004,10 @@ diagnose_failure() {
 compose() {
   (
     cd "$APP_DIR"
+    local -a profile_args=(); local profile
+    for profile in "${COMPOSE_PROFILES[@]}"; do profile_args+=(--profile "$profile"); done
     docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file .env \
-      --file docker-compose.yml --file compose.prod.yml --profile "$COMPOSE_PROFILE" "$@"
+      --file docker-compose.yml --file compose.prod.yml "${profile_args[@]}" "$@"
   )
 }
 
@@ -2053,6 +2105,7 @@ audit_sensitive_permissions() {
   require_private_file_mode "$key" "GitHub Deploy Key private key" || failed=1
   require_private_file_mode "$config" "Deploy-user SSH config" || failed=1
   require_private_file_mode "$INVENTORY_FILE" "Runtime Ansible inventory" || failed=1
+  require_private_file_mode "$RUNTIME_DIR/seaweedfs-s3.json" "SeaweedFS S3 configuration" || failed=1
 
   if [[ -f "$known_hosts" ]]; then
     local kh_mode
@@ -2091,6 +2144,12 @@ verify_deployment() {
   compose ps
   show_service_diagnostics || return 1
   wait_for_kafka_health || { error "Kafka did not become healthy during post-deploy verification."; return 1; }
+  compose run --rm --no-deps api uv run --no-sync python -m sahabino.network storage-init >/dev/null || {
+    error "SeaweedFS bucket access failed with deployed credentials."; compose logs --tail=120 seaweedfs >&2 || true; return 1;
+  }
+  compose exec -T network-analyzer tshark --version >/dev/null || {
+    error "TShark is unavailable in network-analyzer."; compose logs --tail=120 network-analyzer >&2 || true; return 1;
+  }
 
   wait_http_ready "API" "http://127.0.0.1:$API_PORT/docs" 60 2 || {
     compose logs --tail=120 api >&2 || true
@@ -2151,21 +2210,29 @@ WHERE ct.status <> '\''succeeded'\'' ORDER BY a.package_name, ct.task_type;
 }
 
 print_access_hints() {
+  local deployed_storage_exposure
+  deployed_storage_exposure=$(awk -F= '$1=="SAHABINO_OBJECT_STORAGE_EXPOSURE" {print $2}' "$APP_DIR/.env" 2>/dev/null || true)
+  if [[ "$deployed_storage_exposure" == public ]]; then
+    info "Object storage is publicly exposed at the operator-configured endpoint; no SSH forward is required for it."
+    return 0
+  fi
   cat <<EOF_ACCESS
 
 ${C_BOLD}Private observability access${C_RESET}
-Grafana, Loki and Alloy stay loopback-only on the VPS. From your workstation:
+Grafana, Loki and Alloy stay loopback-only. Private object storage uses the same tunnel:
 
   ssh -N \\
     -L $GRAFANA_PORT:127.0.0.1:$GRAFANA_PORT \\
     -L $LOKI_PORT:127.0.0.1:$LOKI_PORT \\
     -L $ALLOY_PORT:127.0.0.1:$ALLOY_PORT \\
+    -L $OBJECT_STORAGE_PORT:127.0.0.1:$OBJECT_STORAGE_PORT \\
     $DEPLOY_USER@SERVER_IP
 
 Then open:
   Grafana: http://127.0.0.1:$GRAFANA_PORT
   Loki:    http://127.0.0.1:$LOKI_PORT
   Alloy:   http://127.0.0.1:$ALLOY_PORT
+  SeaweedFS (private mode): http://127.0.0.1:$OBJECT_STORAGE_PORT
 
 API exposure currently configured as: $API_BIND_ADDRESS:$API_PORT
 The assistant does not configure TLS/reverse-proxy/firewall policy.

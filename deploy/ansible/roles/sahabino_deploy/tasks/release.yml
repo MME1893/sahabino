@@ -5,6 +5,75 @@
     chdir: "{{ sahabino_app_dir }}"
   changed_when: true
 
+- name: Start SeaweedFS before interrupting existing application workers
+  community.docker.docker_compose_v2:
+    project_src: "{{ sahabino_app_dir }}"
+    files: "{{ sahabino_compose_files }}"
+    env_files: [.env]
+    project_name: "{{ sahabino_compose_project_name }}"
+    profiles: "{{ sahabino_compose_profiles }}"
+    services: [seaweedfs]
+    state: present
+    wait: true
+    wait_timeout: 120
+
+- name: Initialize or verify the production capture bucket
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['run', '--rm', '--no-deps', 'api', 'uv', 'run', '--no-sync', 'python', '-m', 'sahabino.network', 'storage-init'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: "'Capture bucket created' in sahabino_storage_init.stdout"
+  register: sahabino_storage_init
+  no_log: true
+
+- name: Check whether a crawler container already exists
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['ps', '-q', 'crawler'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_existing_crawler
+  changed_when: false
+
+- name: Wait for persisted active crawl runs to drain
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'postgres', 'psql', '--no-psqlrc', '--tuples-only', '--no-align', '--username', vault_sahabino_postgres_user, '--dbname', vault_sahabino_postgres_db, '--command', \"SELECT COUNT(*) FROM crawl_runs WHERE status IN ('pending','running');\"] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_active_crawls
+  changed_when: false
+  retries: "{{ ((sahabino_crawler_drain_timeout_seconds | int) / (sahabino_crawler_drain_poll_seconds | int)) | round(0, 'ceil') | int }}"
+  delay: "{{ sahabino_crawler_drain_poll_seconds }}"
+  until: sahabino_active_crawls.stdout | trim == '0'
+  failed_when: false
+  when:
+    - sahabino_existing_crawler.stdout | trim | length > 0
+    - not (sahabino_allow_active_crawl_interruption | bool)
+
+- name: Abort rather than interrupt an active crawl
+  ansible.builtin.assert:
+    that:
+      - sahabino_allow_active_crawl_interruption | bool or sahabino_active_crawls.stdout | default('0') | trim == '0'
+    fail_msg: An active crawl did not drain before the timeout; retry later or explicitly allow interruption.
+  when:
+    - sahabino_existing_crawler.stdout | trim | length > 0
+    - not (sahabino_allow_active_crawl_interruption | bool)
+
+- name: Perform final persisted crawl-state race check
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'postgres', 'psql', '--no-psqlrc', '--tuples-only', '--no-align', '--username', vault_sahabino_postgres_user, '--dbname', vault_sahabino_postgres_db, '--command', \"SELECT COUNT(*) FROM crawl_runs WHERE status IN ('pending','running');\"] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_final_active_crawls
+  changed_when: false
+  when:
+    - sahabino_existing_crawler.stdout | trim | length > 0
+    - not (sahabino_allow_active_crawl_interruption | bool)
+
+- name: Refuse a crawl that started during deployment
+  ansible.builtin.assert:
+    that:
+      - sahabino_allow_active_crawl_interruption | bool or sahabino_final_active_crawls.stdout | default('0') | trim == '0'
+    fail_msg: A crawl started immediately before worker replacement; deployment stopped safely.
+  when:
+    - sahabino_existing_crawler.stdout | trim | length > 0
+    - not (sahabino_allow_active_crawl_interruption | bool)
+
 - name: Stop database-writing application services before migration
   community.docker.docker_compose_v2:
     project_src: "{{ sahabino_app_dir }}"
@@ -16,7 +85,7 @@
     services: "{{ sahabino_database_writers }}"
     state: stopped
 
-- name: Start PostgreSQL and Kafka and wait for Compose health checks
+- name: Start PostgreSQL, Kafka, and SeaweedFS and wait for Compose health checks
   community.docker.docker_compose_v2:
     project_src: "{{ sahabino_app_dir }}"
     files: "{{ sahabino_compose_files }}"

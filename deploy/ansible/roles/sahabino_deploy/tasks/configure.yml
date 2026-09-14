@@ -1,4 +1,52 @@
 ---
+- name: Create the production runtime directory
+  ansible.builtin.file:
+    path: "{{ sahabino_runtime_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Inspect the SeaweedFS runtime configuration path
+  ansible.builtin.stat:
+    path: "{{ sahabino_seaweedfs_s3_config_path }}"
+    follow: false
+  register: sahabino_seaweedfs_config_stat
+
+- name: Refuse an unsafe SeaweedFS runtime configuration path
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_s3_config_path == sahabino_runtime_dir + '/seaweedfs-s3.json'
+      - not (sahabino_seaweedfs_config_stat.stat.islnk | default(false))
+    fail_msg: The SeaweedFS credential file must be the non-symlink runtime path.
+
+- name: Render candidate SeaweedFS S3 configuration
+  ansible.builtin.template:
+    src: seaweedfs-s3.json.j2
+    dest: "{{ sahabino_seaweedfs_s3_config_path }}.new"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Validate candidate SeaweedFS S3 configuration syntax
+  ansible.builtin.command:
+    argv: [python3, -m, json.tool, "{{ sahabino_seaweedfs_s3_config_path }}.new"]
+  changed_when: false
+  no_log: true
+
+- name: Atomically install SeaweedFS S3 configuration
+  ansible.builtin.command:
+    argv: [mv, -f, "{{ sahabino_seaweedfs_s3_config_path }}.new", "{{ sahabino_seaweedfs_s3_config_path }}"]
+  changed_when: true
+  no_log: true
+
+- name: Enforce SeaweedFS configuration permissions
+  ansible.builtin.file:
+    path: "{{ sahabino_seaweedfs_s3_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
 - name: Render the production environment file
   ansible.builtin.template:
     src: production.env.j2
@@ -32,6 +80,8 @@
     that:
       - sahabino_merged_compose.services.postgres.ports | default([], true) | length == 0
       - sahabino_merged_compose.services.kafka.ports | default([], true) | length == 0
+      - sahabino_merged_compose.services.seaweedfs.ports[0].host_ip == sahabino_object_storage_bind_address
+      - sahabino_merged_compose.services.seaweedfs.volumes[1].source == sahabino_seaweedfs_s3_config_path
       - sahabino_merged_compose.services.grafana.ports[0].host_ip == "127.0.0.1"
       - sahabino_merged_compose.services.loki.ports[0].host_ip == "127.0.0.1"
       - sahabino_merged_compose.services.alloy.ports[0].host_ip == "127.0.0.1"
@@ -41,4 +91,5 @@
       - sahabino_merged_compose.services.api.environment.SAHABINO_LOG_FORMAT == "json"
       - sahabino_merged_compose.services.crawler.environment.SAHABINO_LOG_FORMAT == "json"
       - sahabino_merged_compose.services.ingestion.environment.SAHABINO_LOG_FORMAT == "json"
+      - sahabino_merged_compose.services['network-analyzer'].environment.SAHABINO_LOG_FORMAT == "json"
     fail_msg: The merged Compose configuration violates a production exposure or logging invariant.

@@ -624,3 +624,13 @@ validates relative Compose bind sources, and refuses symlink escapes.
 - Investigate disk growth before the filesystem is nearly full.
 - Keep production Git state clean; make source changes locally, commit/push, and
   deploy a revision rather than editing tracked files on the VPS.
+# Network services in production
+
+The normal production assistant deploys and verifies SeaweedFS and
+`network-analyzer`; no second Compose command is required. Private object
+storage over an SSH tunnel is the recommended/default selection. Deployment
+waits for authoritative `crawl_runs` state to drain before replacing the
+crawler and aborts on timeout unless interruption was explicitly allowed.
+
+Raw captures persist in the SeaweedFS named volume but are not covered by the
+PostgreSQL backup workflow.

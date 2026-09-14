@@ -20,6 +20,13 @@
     - 3100
     - 12345
 
+- name: Wait for the SeaweedFS S3 port
+  ansible.builtin.wait_for:
+    host: "{{ '127.0.0.1' if sahabino_object_storage_bind_address == '0.0.0.0' else sahabino_object_storage_bind_address }}"
+    port: 8333
+    state: started
+    timeout: 60
+
 - name: Read running Compose services
   ansible.builtin.command:
     argv: "{{ sahabino_compose_cli + ['ps', '--services', '--filter', 'status=running'] }}"
@@ -37,6 +44,29 @@
         | difference(sahabino_running_services_command.stdout_lines)
         | length == 0
     fail_msg: One or more requested Sahabino production services are not running.
+
+- name: Verify capture bucket access with production credentials
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['run', '--rm', '--no-deps', 'api', 'uv', 'run', '--no-sync', 'python', '-m', 'sahabino.network', 'storage-init'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+  no_log: true
+
+- name: Verify TShark exists in the running analyzer image
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'network-analyzer', sahabino_network_tshark_path, '--version'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Query network analyzer consumer group (empty group is valid)
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'kafka', 'timeout', '20s', '/opt/kafka/bin/kafka-consumer-groups.sh', '--bootstrap-server', 'kafka:19092', '--describe', '--group', sahabino_network_analyzer_consumer_group_id] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_network_group
+  changed_when: false
+  failed_when:
+    - sahabino_network_group.rc != 0
+    - "'does not exist' not in (sahabino_network_group.stdout + sahabino_network_group.stderr)"
 
 - name: Record the successful resolved revision outside the repository
   ansible.builtin.copy:

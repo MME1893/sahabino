@@ -312,3 +312,23 @@ Intentional v1 limitations are plaintext-oriented analysis, passive/incomplete
 QUIC classification, no QUIC decryption or inferred QUIC loss, best-effort DNS,
 direction degradation for classic PCAP, no storage notifications, no live
 capture, and no aggregate 0–100 network score.
+# Production operation
+
+The network subsystem retains its own `network` Compose profile and analyzer
+Dockerfile, but the standard production deployment activates it together with
+observability. Production storage initialization is automatic; the synthetic
+`scripts/smoke-network-pipeline.sh` remains a manual local/test acceptance test
+and is never run against production by deployment automation.
+
+SeaweedFS objects persist in the `seaweedfs_data` named volume. `docker compose
+down` without `-v` preserves named volumes, while `down -v` is destructive and
+must not be used casually. PostgreSQL backups do **not** include raw PCAP
+objects; object-storage backup/disaster recovery remains out of scope.
+
+Use Compose service resolution rather than container names when diagnosing:
+
+```bash
+docker compose --profile observability --profile network logs --tail=120 seaweedfs
+docker compose --profile observability --profile network logs --tail=120 network-analyzer
+docker compose --profile observability --profile network exec network-analyzer tshark --version
+```

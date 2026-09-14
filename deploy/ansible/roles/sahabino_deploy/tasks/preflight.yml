@@ -8,6 +8,12 @@
       - sahabino_api_port | int not in [80, 443]
       - sahabino_backup_retention_days | int >= 0
       - sahabino_log_level in ["INFO", "WARNING", "ERROR", "CRITICAL"]
+      - sahabino_compose_profiles == ["observability", "network"]
+      - sahabino_object_storage_exposure in ["private", "public"]
+      - sahabino_object_storage_bind_address in ["127.0.0.1", "0.0.0.0", "::"]
+      - sahabino_object_storage_public_endpoint_url is match("^https?://[^/ ]+(:[0-9]+)?$")
+      - sahabino_object_storage_exposure != "private" or sahabino_object_storage_bind_address == "127.0.0.1"
+      - sahabino_object_storage_exposure != "public" or sahabino_object_storage_bind_address in ["0.0.0.0", "::"]
     fail_msg: Supply an explicit revision and review the production group variables.
 
 - name: Require all production secret variables

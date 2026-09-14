@@ -14,14 +14,17 @@ sahabino_compose_files:
   - compose.prod.yml
 sahabino_compose_profiles:
   - observability
+  - network
 
 sahabino_infrastructure_services:
   - postgres
   - kafka
+  - seaweedfs
 sahabino_application_services:
   - api
   - ingestion
   - crawler
+  - network-analyzer
 sahabino_observability_services:
   - loki
   - alloy
@@ -53,6 +56,10 @@ sahabino_kafka_producer_queue_full_poll_timeout_seconds: 0.1
 # Local SeaweedFS on the Sahabino VPS, accessed through its S3-compatible API.
 # No Amazon S3 or other remote object-storage service is configured here.
 sahabino_object_storage_endpoint_url: http://seaweedfs:8333
+sahabino_object_storage_exposure: private
+sahabino_object_storage_bind_address: 127.0.0.1
+sahabino_runtime_dir: /opt/sahabino/runtime
+sahabino_seaweedfs_s3_config_path: /opt/sahabino/runtime/seaweedfs-s3.json
 # Embedded in presigned URLs. Loopback keeps SeaweedFS private; remote clients
 # can reach it through an SSH tunnel when the optional network profile is used.
 sahabino_object_storage_public_endpoint_url: http://127.0.0.1:8333
@@ -66,6 +73,9 @@ sahabino_network_tshark_path: tshark
 sahabino_network_tshark_timeout_seconds: 120
 sahabino_network_pending_upload_expiry_seconds: 3600
 sahabino_network_stale_analysis_seconds: 1800
+sahabino_crawler_drain_timeout_seconds: 600
+sahabino_crawler_drain_poll_seconds: 10
+sahabino_allow_active_crawl_interruption: false
 
 sahabino_playstore_crawl_interval_minutes: 60
 sahabino_playstore_max_concurrent_apps: 3

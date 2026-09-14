@@ -540,3 +540,27 @@ docker compose \
 
 For the complete post-deploy operations/check command set, continue with
 [`docs/operations/README.md`](../../docs/operations/README.md).
+# Production network subsystem
+
+Normal `--deploy` and `--verify` runs activate both the `observability` and
+`network` Compose profiles. The resulting production project contains Postgres,
+Kafka, SeaweedFS, API, crawler, ingestion, the separately built
+`network-analyzer`, Loki, Alloy, and Grafana. The assistant defaults SeaweedFS
+to `127.0.0.1:8333`; public exposure requires an explicit endpoint and
+acknowledgement because the assistant configures neither TLS, a reverse proxy,
+nor the firewall.
+
+Ansible atomically renders Vault-derived S3 credentials to
+`/opt/sahabino/runtime/seaweedfs-s3.json` as root-owned mode `0600`. It starts
+SeaweedFS and runs the idempotent `python -m sahabino.network storage-init`
+before waiting for persisted active crawl runs to drain. The bounded drain
+defaults to abort rather than interrupting work; automation must explicitly use
+`--allow-active-crawl-interruption` to override that safety decision.
+
+For private access, forward all operator endpoints from a workstation:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 -L 3100:127.0.0.1:3100 \
+  -L 12345:127.0.0.1:12345 -L 8333:127.0.0.1:8333 \
+  sahabino@SERVER_IP
+```

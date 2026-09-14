@@ -167,11 +167,11 @@ services:
       ]
 
     ports:
-      - "8333:8333"
+      - "${SAHABINO_OBJECT_STORAGE_BIND_ADDRESS:-0.0.0.0}:8333:8333"
 
     volumes:
       - seaweedfs_data:/data
-      - ./infrastructure/network/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+      - ${SAHABINO_SEAWEEDFS_S3_CONFIG_PATH:-./infrastructure/network/seaweedfs-s3.json}:/etc/seaweedfs/s3.json:ro
 
 
     healthcheck:

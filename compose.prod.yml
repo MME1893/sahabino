@@ -91,7 +91,7 @@ services:
       - name: s3
         target: 8333
         published: "8333"
-        host_ip: 127.0.0.1
+        host_ip: "${SAHABINO_OBJECT_STORAGE_BIND_ADDRESS:-127.0.0.1}"
         protocol: tcp
 
   network-analyzer:

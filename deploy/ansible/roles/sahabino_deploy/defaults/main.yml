@@ -12,3 +12,5 @@ sahabino_compose_cli:
   - compose.prod.yml
   - --profile
   - observability
+  - --profile
+  - network

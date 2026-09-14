@@ -120,3 +120,11 @@ copying development values onto the server.
 
 For production configuration, permissions, Vault behavior, and rerun policy, see
 [Production deployment](../deploy/ansible/README.md).
+# Production object-storage exposure
+
+Containers always use `SAHABINO_OBJECT_STORAGE_ENDPOINT_URL=http://seaweedfs:8333`.
+The distinct public endpoint is embedded in presigned URLs: private production
+uses `http://127.0.0.1:8333` for an SSH local forward, while public mode requires
+an operator-supplied HTTP(S) origin. Production credentials come from Ansible
+Vault and the generated SeaweedFS bind source is outside the Git checkout at
+`/opt/sahabino/runtime/seaweedfs-s3.json` (root:root, `0600`).
