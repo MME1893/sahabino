@@ -218,7 +218,7 @@ def test_complete_capture_store_analyze_publish_ingest_is_idempotent(
         assert session.scalar(select(func.count()).select_from(IngestedEvent)) == 1
         result = session.scalar(select(NetworkAnalysisResult))
         assert result is not None
-        assert result.analysis_id == first["analysis_id"]
+        assert result.analysis_id == UUID(first["analysis_id"])
         assert result.comparison_ready is True
         assert result.effective_file_throughput_mbps is not None
 
