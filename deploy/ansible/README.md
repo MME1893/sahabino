@@ -1,271 +1,417 @@
 # Sahabino production deployment
 
-This directory contains the first production deployment path for the single
-Sahabino repository. It manages only Sahabino files, containers, backups, and
-systemd units. It does not install Docker, alter host networking or firewall
-rules, touch ports 80/443, or interact with VPN/X-Ray services.
-
-Production uses `docker-compose.yml` as the base and `compose.prod.yml` as a
-small override. PostgreSQL and Kafka have no published host ports. Grafana,
-Loki, and Alloy listen only on `127.0.0.1`; the API listens on port 8000 by
-default. No reverse proxy is installed.
-
-## 1. Control-machine setup
-
-Run Ansible from Linux, macOS, or WSL with SSH access to the Ubuntu 24.04 VPS.
-Install `ansible-core`, install the required collection, and create the local
-inventory from the committed example:
+The recommended production entry point is the hardened deployment assistant:
 
 ```bash
-cd deploy/ansible
-python3 -m pip install -r requirements.txt
-ansible-galaxy collection install -r requirements.yml
-cp inventory/production.example.yml inventory/production.yml
+sudo deploy/ansible/sahabino-deploy.sh
 ```
 
-Edit `inventory/production.yml` with the VPS address and SSH account. Confirm
-the SSH host key before running Ansible. The inventory file is ignored by Git.
-The default variables assume the deployment account and group are both named
-`sahabino`; change `sahabino_deploy_user` and `sahabino_deploy_group` in
-`group_vars/production.yml` if necessary.
+It is an operational wrapper around the Ansible playbooks in this directory.
+Ansible remains the source of truth for provisioning, backups, configuration
+rendering, migrations, Kafka topic provisioning, service startup, and deployment
+safety checks. The wrapper exists so an operator does not need to manually
+reconstruct host checks, Git/SSH setup, Vault handling, dependency bootstrap,
+permission repair, failure diagnosis, and post-deploy verification.
 
-The server must already have Docker Engine, Docker Compose v2.24.4 or newer,
-and its read-only GitHub Deploy Key configuration. The role verifies Docker but
-does not install or reconfigure it. The default SSH remote is
-`git@github-sahabino:MME1893/sahabino.git`.
+For day-to-day runtime commands after deployment, see
+[`docs/operations/README.md`](../../docs/operations/README.md).
 
-Check connectivity:
+## Production scope and safety boundaries
+
+The production automation manages Sahabino resources only. It does **not**:
+
+- change firewall, VPN, X-Ray, or unrelated services;
+- touch ports 80/443;
+- install TLS or a reverse proxy;
+- expose Grafana, Loki, or Alloy publicly;
+- publish PostgreSQL or Kafka host ports;
+- run `git reset --hard` or `git clean` to hide production changes;
+- remove Docker volumes as an automatic recovery action.
+
+The API currently binds to port 8000 according to production variables. A public
+bind (`0.0.0.0` or `::`) requires explicit operator acknowledgement.
+
+## Host expectations
+
+The assistant is designed for an Ubuntu production VPS. Ubuntu 24.04 is the
+explicitly tested baseline. Newer Ubuntu releases produce a warning and continue
+with capability-based checks instead of being hard-blocked. The legacy
+`--allow-unsupported-os` option remains accepted for compatibility but is no
+longer required to bypass an OS-version allowlist.
+
+Docker Engine and Docker Compose are validated before deployment. Compose
+v2.24.4 or newer is required by the production override syntax.
+
+The assistant also inspects disk, RAM, swap, pending reboot state, required host
+utilities, reserved Sahabino ports, and Docker packaging. A pending reboot is a
+warning; the assistant never reboots the host automatically.
+
+## Quick start
+
+From a checkout on the production VPS:
 
 ```bash
-ansible production -m ansible.builtin.ping
+chmod 755 deploy/ansible/sahabino-deploy.sh
+sudo deploy/ansible/sahabino-deploy.sh
 ```
 
-## 2. GitHub Deploy Key setup on a new server
+On a first run, the wrapper can create/validate the deployment account, GitHub
+Deploy Key, repository checkout, Ansible controller, runtime inventory, and
+production Vault before running provisioning and deployment.
 
-Create the key as the deployment account that owns `/opt/sahabino/app` (the
-default is `sahabino`). Generate a dedicated Ed25519 key and protect the SSH
-directory and private key:
+A successful rerun reuses existing validated state. Fix the failed prerequisite
+and execute the same command again; there is no separate checkpoint file that
+must be manually edited.
+
+## Modes and options
+
+Show built-in help:
 
 ```bash
-umask 077
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-ssh-keygen -t ed25519 \
-  -f ~/.ssh/sahabino_github \
-  -C "sahabino-production-deploy" \
-  -N ''
-chmod 600 ~/.ssh/sahabino_github
-chmod 644 ~/.ssh/sahabino_github.pub
+deploy/ansible/sahabino-deploy.sh --help
 ```
 
-In the GitHub repository, open **Settings → Deploy keys**, add the contents of
-`~/.ssh/sahabino_github.pub`, and leave **Allow write access** disabled. Only
-the public `.pub` file belongs in GitHub.
+Main modes:
 
-Create `~/.ssh/config` if needed, apply restrictive permissions, and then merge
-the following stanza into it. Do not replace or truncate unrelated SSH host
-entries already on the VPS.
+| Mode | Purpose |
+| --- | --- |
+| `--full` | Bootstrap + provision + deploy + verify. Default. |
+| `--check` | Host/repository/Vault preflight only. |
+| `--provision` | Bootstrap as needed and run `provision.yml` only. |
+| `--deploy` | Bootstrap as needed, deploy a revision, then verify. |
+| `--verify` | Verify the currently running production deployment. |
+
+Useful options:
+
+| Option | Purpose |
+| --- | --- |
+| `--revision REV` | Branch, tag, or SHA; resolved to a full commit SHA. |
+| `--repository-url URL` | Explicit read-only Git URL for standalone first-run bootstrap. |
+| `--yes` / `-y` | Accept safe/default choices where possible. |
+| `--confirm-public-api` | Explicitly acknowledge a public API bind. |
+| `--no-reboot` | Acknowledge a pending reboot warning; does not reboot. |
+| `--skip-docker-migration` | Refuse automatic Snap-Docker migration. |
+| `--socks-proxy HOST:PORT` | Use a SOCKS5 proxy for dependency downloads only. |
+| `--no-socks-proxy` | Disable automatic local SOCKS fallback detection. |
+
+Examples:
 
 ```bash
-touch ~/.ssh/config
-chmod 600 ~/.ssh/config
+# Full interactive production deployment
+sudo deploy/ansible/sahabino-deploy.sh
+
+# Deploy a specific revision
+sudo deploy/ansible/sahabino-deploy.sh \
+  --deploy \
+  --revision origin/main
+
+# Verify only
+sudo deploy/ansible/sahabino-deploy.sh --verify
+
+# Non-interactive deployment where public API exposure is intentional
+sudo deploy/ansible/sahabino-deploy.sh \
+  --yes \
+  --confirm-public-api \
+  --revision <sha>
 ```
 
-```sshconfig
-Host github-sahabino
-    HostName github.com
-    User git
-    IdentityFile ~/.ssh/sahabino_github
-    IdentitiesOnly yes
-```
-
-Test the alias:
-
-```bash
-ssh -T git@github-sahabino
-```
-
-GitHub should report successful authentication while noting that shell access
-is unavailable. After the repository exists, verify its SSH remote is exactly:
-
-```bash
-git -C /opt/sahabino/app remote get-url origin
-# expected: git@github-sahabino:MME1893/sahabino.git
-```
-
-The private file `~/.ssh/sahabino_github` must remain only on the VPS. Never
-commit it, copy it into this repository, embed it in Ansible, or store it in
-Ansible Vault.
-
-## 3. Ansible Vault setup
-
-Create the ignored production vault from the example, replace every
-`CHANGE_ME` value, and encrypt it. Do not create or commit a vault-password
-file unless it is stored outside this repository and protected separately.
-
-```bash
-cp group_vars/production/vault.yml.example group_vars/production/vault.yml
-ansible-vault encrypt group_vars/production/vault.yml
-ansible-vault view group_vars/production/vault.yml
-```
-
-Use long URL-safe secret values containing letters, digits, dots, underscores,
-or hyphens. This restriction makes both the generated dotenv file and the
-PostgreSQL connection URL unambiguous. Proxy URLs are a Vault-protected list and
-may be left empty while proxying is disabled.
-
-The operator must provide:
-
-- PostgreSQL database name, user, and a unique password.
-- Grafana admin user and a unique password.
-- Unique credentials for the VPS-local SeaweedFS S3-compatible endpoint. These
-  are not AWS account credentials. The `network` Compose profile remains opt-in
-  and is not deployed by the default playbooks.
-- Proxy URLs only if Play Store proxying is enabled.
-- The correct repository SSH URL, host address, SSH user, and each deployment
-  revision.
-
-The rendered `/opt/sahabino/app/.env` is owned by the deployment account with
-mode `0600`. It is never committed.
-
-## 4. Local SeaweedFS object storage
-
-Sahabino does not use Amazon S3 or another remote cloud object-storage provider
-by default. The existing S3-compatible abstraction talks to a SeaweedFS
-container, and capture bytes persist on the same Sahabino VPS:
+Relevant environment overrides include:
 
 ```text
-Sahabino API / network analyzer
-        |
-        | S3-compatible protocol
-        v
-SeaweedFS container
-        |
-        v
-seaweedfs_data Docker named volume
-        |
-        v
-local disk on the Sahabino VPS
+SAHABINO_REPOSITORY_URL
+SAHABINO_DEPLOY_REVISION
+SAHABINO_VAULT_PASSWORD
+SAHABINO_VAULT_PASSWORD_FILE
+SAHABINO_VAULT_PASSWORD_STORE
+SAHABINO_CONFIRM_PUBLIC_API
+SAHABINO_SOCKS_PROXY
+SAHABINO_DEFAULT_SOCKS_PROXY
+SAHABINO_PYPI_INDEX_URL
+SAHABINO_PIP_TIMEOUT
+SAHABINO_PIP_RETRIES
+SAHABINO_WORKTREE_UMASK
 ```
 
-The production object-storage variables mean:
+## Dependency downloads and optional SOCKS proxy
 
-- `sahabino_object_storage_endpoint_url=http://seaweedfs:8333` is the internal
-  Docker endpoint used by Sahabino services.
-- `sahabino_object_storage_public_endpoint_url=http://127.0.0.1:8333` is the
-  endpoint embedded in presigned URLs.
-- `sahabino_object_storage_bucket=sahabino-network-captures` is a logical bucket
-  hosted by local SeaweedFS.
-- `sahabino_object_storage_region=us-east-1` is only an S3 API/AWS Signature V4
-  signing-compatibility value. It does not place data in AWS or a US data center.
-- The Vault access key and secret authenticate to local SeaweedFS; they are not
-  AWS account credentials.
-- Actual capture bytes live in the `sahabino_seaweedfs_data` Docker named volume
-  on the VPS when the profile is enabled.
+The Ansible controller is installed outside the checkout at
+`/opt/sahabino/ansible-venv`, with collections under
+`/opt/sahabino/ansible-collections`.
 
-No Amazon S3 account or remote object-storage service is required or configured.
-The production playbooks intentionally leave the `network` Compose profile
-disabled by default. If it is enabled later, keep SeaweedFS loopback-bound and
-use an SSH tunnel when a remote client must follow a presigned URL:
+When dependency definitions change or the controller cache is absent, the
+assistant probes the full PyPI `ansible-core` index response. If the direct route
+is healthy, it uses the normal route. If the direct route fails or is too slow,
+it checks the conventional loopback endpoint `127.0.0.1:8080` unless automatic
+fallback has been disabled.
+
+For an explicit SOCKS route, first create a loopback-only SSH dynamic forward in
+a separate terminal:
 
 ```bash
-ssh -N \
-  -L 8333:127.0.0.1:8333 \
-  sahabino@SERVER_IP
+ssh \
+  -D 127.0.0.1:8080 \
+  -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  <proxy-user>@<proxy-host>
 ```
 
-The local credentials rendered by Ansible must match SeaweedFS's local S3
-configuration before enabling that profile. Do not expose port 8333 publicly.
-
-## 5. Provision once
-
-Provisioning installs only `git` and the PostgreSQL client, creates the
-Sahabino application/backup/configuration directories, installs the backup
-script and systemd units, and enables the timer. It does not install Docker and
-does not modify unrelated services.
+Then run:
 
 ```bash
-ansible-playbook provision.yml --ask-vault-pass --ask-become-pass
+sudo deploy/ansible/sahabino-deploy.sh \
+  --socks-proxy 127.0.0.1:8080
 ```
 
-Omit `--ask-become-pass` when the SSH account has passwordless sudo. Ansible
-still loads the encrypted production group variables, so provide the Vault
-password during provisioning.
+Proxying is intentionally limited to `pip` and `ansible-galaxy` through
+`proxychains4`. It does not change system proxy settings and does not route Git,
+Docker daemon traffic, running Sahabino services, or unrelated VPS traffic.
 
-## 6. First deployment and later revisions
+`pip` uses extended timeout/retry settings. A PyPI read timeout or connection
+reset is diagnosed separately from the misleading secondary
+`No matching distribution found` error that `pip` can emit after a failed index
+read.
 
-Every deployment requires an explicit revision. A full commit SHA is the most
-reproducible choice; tags and explicitly named branches are also accepted.
+## GitHub Deploy Key and SSH policy
+
+The default production key is:
+
+```text
+~sahabino/.ssh/sahabino_github
+```
+
+The assistant:
+
+1. creates the deployment user's `.ssh` directory with restrictive permissions;
+2. generates a dedicated Ed25519 key if requested;
+3. regenerates a missing `.pub` file from the private key;
+4. verifies that private/public files are the same key pair;
+5. prints the SHA-256 public-key fingerprint;
+6. pins GitHub host keys in a dedicated `known_hosts.github` file;
+7. manages only its marked `Host github-sahabino` SSH block;
+8. validates the resolved SSH configuration with `ssh -G`;
+9. verifies repository read access with `git ls-remote`.
+
+The managed SSH policy includes `IdentitiesOnly yes`, `BatchMode yes`, a bounded
+connect timeout, a dedicated known-hosts file, and `StrictHostKeyChecking yes`.
+The assistant never uses `accept-new`.
+
+If the key is new, add only the **public** key in GitHub:
+
+```text
+Repository -> Settings -> Deploy keys -> Add deploy key
+Allow write access: OFF
+```
+
+The private key stays only on the production VPS.
+
+## Repository discovery and checkout safety
+
+The production checkout defaults to:
+
+```text
+/opt/sahabino/app
+```
+
+Repository discovery checks the invoking checkout, the production checkout, and
+project production variables before prompting. GitHub HTTPS/SSH forms are
+normalized to the production read-only alias policy where appropriate.
+
+An existing checkout must be readable/writable by the deployment user and must
+be clean. The assistant refuses to overwrite local server-side changes. It does
+not recursively `chown` arbitrary untracked production content and does not use
+destructive Git cleanup commands to make a deployment pass.
+
+The requested revision is fetched and resolved to a full commit SHA before
+Ansible receives it. If no revision is supplied, the assistant discovers the
+remote default branch from `origin/HEAD`/remote HEAD instead of blindly assuming
+`main`.
+
+## Production permission model
+
+The wrapper itself starts with a restrictive `umask 077` for secrets. Git
+worktree operations and Ansible execution use a separate worktree umask
+(default `022`) so tracked configuration mounted into non-root containers does
+not become unreadable.
+
+After checkout, the assistant reconstructs tracked modes from the Git index:
+
+| Path/type | Production mode/policy |
+| --- | --- |
+| `/opt/sahabino` | `0750` |
+| `/opt/sahabino/app` | `0750` |
+| tracked directories | `0755` |
+| Git mode `100644` files | `0644` |
+| Git mode `100755` files | `0755` |
+| tracked symlinks | never followed/chmodded |
+| `.env` | `0600` |
+| encrypted `vault.yml` | `0600` |
+| runtime Ansible inventory | `0600` |
+| GitHub Deploy Key private key | `0600` |
+| deploy-user SSH config | `0600` |
+| persisted Vault password | `0600`, root-owned |
+
+Setuid/setgid bits are removed from paths the wrapper normalizes.
+
+The assistant also discovers repository-relative Compose bind sources from the
+base and production Compose files and verifies that:
+
+- the source exists;
+- it does not escape the checkout through `..` or a symlink;
+- every required parent directory is readable/traversable for arbitrary
+  non-root container UIDs;
+- mounted files are readable;
+- directory trees mounted into containers are readable/traversable.
+
+This protects Loki, Alloy, Grafana provisioning/dashboard files, SeaweedFS
+configuration, and future repository-relative bind mounts from the same class of
+host-permission failure.
+
+After normalization, `git status --porcelain` must still be clean. If changing
+modes according to Git metadata dirties the worktree, deployment stops.
+
+## Local Ansible controller layout
+
+Generated controller/runtime state is kept outside the checkout:
+
+```text
+/opt/sahabino/app                          # Git checkout
+/opt/sahabino/ansible-venv                # Python/Ansible venv
+/opt/sahabino/ansible-collections         # installed collections
+/opt/sahabino/runtime/production.inventory.yml
+/etc/sahabino/ansible-vault-password      # default persisted Vault password
+/var/log/sahabino-deploy-assistant/       # protected run/deploy logs
+```
+
+The generated local inventory uses `ansible_connection: local` because the
+wrapper runs on the production VPS itself.
+
+## Ansible Vault and secrets
+
+The encrypted production Vault is:
+
+```text
+deploy/ansible/group_vars/production/vault.yml
+```
+
+It must be Git-ignored and untracked. Existing files must start with the
+Ansible-Vault header.
+
+For first-run interactive setup, the assistant can generate a Vault password or
+accept one supplied by the operator. By default it persists the password at:
+
+```text
+/etc/sahabino/ansible-vault-password
+```
+
+The store is root-owned, `0600`, outside the Git checkout, and reused on future
+runs. A generated password remains hidden by default; the operator may choose a
+one-time terminal reveal for an external backup.
+
+If `SAHABINO_VAULT_PASSWORD_FILE` is supplied explicitly, that file wins and is
+not implicitly copied. It must be a non-symlink regular file, non-empty,
+outside the checkout, owner-only, and owned by an expected user. An explicit
+`SAHABINO_VAULT_PASSWORD` is treated as ephemeral for that invocation.
+
+Generated service secrets are never printed. Plaintext Vault content exists only
+in a short-lived mode-`0600` temporary file, is serialized with PyYAML
+`safe_dump`, encrypted, and then removed.
+
+The Vault currently contains production values for PostgreSQL, Grafana,
+SeaweedFS-compatible object storage, and optional Play Store proxy URLs.
+
+## Provisioning and deployment sequence
+
+A full run performs these major stages:
+
+1. Host preflight: Ubuntu capability check, disk/RAM/swap/reboot state.
+2. Base host dependency validation/install.
+3. Deployment account validation/creation.
+4. Docker Engine/Compose validation and Snap-Docker safety handling.
+5. GitHub Deploy Key and pinned-host-key SSH policy.
+6. Production repository discovery/clone/fetch and clean-worktree checks.
+7. Git-index-based checkout permission normalization and Compose bind validation.
+8. Reserved Sahabino port conflict checks.
+9. Local Ansible venv/collection synchronization, optionally through SOCKS.
+10. Runtime local inventory generation outside the repository.
+11. Production Vault/password validation or creation.
+12. Ansible syntax checks.
+13. Idempotent `provision.yml`.
+14. Revision resolution to a full Git commit SHA.
+15. Explicit public-API acknowledgement when applicable.
+16. `deploy.yml`.
+17. Post-deploy permission, service, readiness, data, lag, and resource checks.
+
+Inside `deploy.yml`, Ansible enforces:
+
+1. parameter/secret/Docker/Compose/Git preflight;
+2. a verified PostgreSQL custom-format backup before revision/migration changes;
+3. exact revision checkout;
+4. mode-`0600` production `.env` rendering;
+5. merged Compose validation and production exposure/logging assertions;
+6. application image build;
+7. stopping database-writing application services before migration;
+8. PostgreSQL/Kafka startup/readiness;
+9. explicit Alembic migration and code-head/database-head equality;
+10. Kafka topic topology provisioning/verification;
+11. application + observability startup/update;
+12. service/readiness verification and deployed-SHA recording.
+
+A failed pre-deploy backup stops the deployment before migrations.
+
+## Post-deploy verification
+
+The wrapper's `--verify` path is also executed after a successful deployment.
+It checks:
+
+- production checkout/bind-mount permission policy;
+- sensitive file modes;
+- all services expected by the merged Compose model are running;
+- Kafka container health;
+- API `/docs` readiness;
+- Loki `/ready` readiness with retries for its normal temporary 503 warm-up;
+- Grafana `/api/health`;
+- PostgreSQL pipeline counts;
+- non-succeeded crawler tasks;
+- ingestion consumer-group lag;
+- recent crawler scheduler markers;
+- recent ingestion processing markers;
+- resource usage for Sahabino project containers only;
+- `/opt/sahabino/DEPLOYED_REVISION` when present.
+
+If a service is missing/non-running, the wrapper prints the service name,
+`docker compose ps -a` output for that service, and its last 120 log lines.
+
+Run verification at any time with:
 
 ```bash
-ansible-playbook deploy.yml \
-  --ask-vault-pass \
-  -e sahabino_deploy_revision=0123456789abcdef0123456789abcdef01234567
+sudo deploy/ansible/sahabino-deploy.sh --verify
 ```
 
-Examples for a tag or branch:
+## Public API acknowledgement
+
+When the production API binds to `0.0.0.0` or `::`, interactive deployments
+require confirmation. In non-interactive mode use:
 
 ```bash
-ansible-playbook deploy.yml --ask-vault-pass -e sahabino_deploy_revision=v0.1.0
-ansible-playbook deploy.yml --ask-vault-pass -e sahabino_deploy_revision=main
+sudo deploy/ansible/sahabino-deploy.sh \
+  --yes \
+  --confirm-public-api \
+  --revision <sha>
 ```
 
-Ansible uses the Git module to fetch and check out the supplied revision with
-`force: false`; it never performs a blind `git pull` and refuses to overwrite
-server-side repository changes. The resolved SHA is written to
-`/opt/sahabino/DEPLOYED_REVISION` only after all checks succeed.
+This acknowledgement does not mean TLS/authentication/reverse-proxy/firewall
+protection exists. Those controls are outside this deployment assistant.
 
-The production Compose project is explicitly `sahabino`; Ansible passes that
-name to every Compose operation. Containers, the network, and named volumes
-therefore consistently use names such as `sahabino-postgres-1`,
-`sahabino_default`, `sahabino_postgres_data`, `sahabino_kafka_data`,
-`sahabino_grafana_data`, and `sahabino_loki_data`.
+## Backups
 
-The implemented deployment sequence is:
+PostgreSQL custom-format dumps are stored under:
 
-1. Validate inputs, secrets, Docker/Compose versions, Git access, and checkout
-   cleanliness.
-2. If a Sahabino PostgreSQL container exists, run `pg_dump -Fc`, verify the
-   archive with `pg_restore --list`, and abort on any backup failure.
-3. Fetch the repository and check out the requested branch, tag, or commit.
-4. Render the mode-`0600` production `.env`.
-5. Validate the merged Compose model and assert the database, Kafka, logging,
-   and loopback-only observability invariants.
-6. Build the API, ingestion, and crawler images from the checked-out source.
-7. Stop database-writing application containers, then start PostgreSQL and
-   Kafka and wait for their health checks.
-8. Run `uv run --no-sync alembic upgrade head` explicitly in the API image and
-   verify the database revision equals the checked-out code head.
-9. Run `uv run --no-sync python -m sahabino.messaging.admin` to create or verify
-   the existing project Kafka topic topology.
-10. Start/update API, ingestion, crawler, Grafana, Loki, and Alloy; verify API
-    health and that every requested container is running.
-
-The pre-deploy backup is completed before Git checkout or migration. A failed
-backup stops the play immediately, so migrations cannot run.
-
-## 7. Backups
-
-Backups are PostgreSQL custom-format dumps, not copies of the Docker volume.
-They are written outside the repository under
-`/var/backups/sahabino/postgres`. Filenames contain a UTC timestamp and a backup
-kind; pre-deploy backups also identify the current and requested revisions when
-available. The default local retention is 14 days and is configurable with
-`sahabino_backup_retention_days`. Retention pruning runs only after a successful
-scheduled daily backup. Manual, pre-deploy, and restore-safety backups create
-and verify their archives without deleting any existing dump.
-
-If the matching Sahabino PostgreSQL container exists but is stopped, the backup
-script starts it long enough to obtain and verify the dump, then returns it to
-the stopped state. It never selects a container by a generic name alone.
-
-Create and verify a manual backup:
-
-```bash
-ansible-playbook backup.yml --ask-vault-pass
+```text
+/var/backups/sahabino/postgres
 ```
 
-Inspect the daily timer and recent service output on the VPS:
+Provisioning installs a systemd backup service/timer. Inspect it with:
 
 ```bash
 sudo systemctl status sahabino-postgres-backup.timer
@@ -273,57 +419,58 @@ sudo systemctl list-timers sahabino-postgres-backup.timer
 sudo journalctl -u sahabino-postgres-backup.service --since today
 ```
 
-List and validate backups:
+List archives:
 
 ```bash
-sudo find /var/backups/sahabino/postgres -maxdepth 1 -type f -name '*.dump' -printf '%TY-%Tm-%Td %TH:%TM %10s %p\n' | sort
+sudo find /var/backups/sahabino/postgres \
+  -maxdepth 1 \
+  -type f \
+  -name '*.dump' \
+  -printf '%TY-%Tm-%Td %TH:%TM %10s %p\n' \
+  | sort
+```
+
+Validate one archive catalog:
+
+```bash
 sudo pg_restore --list /var/backups/sahabino/postgres/NAME.dump >/dev/null
 ```
 
-The backup role has an explicit `sahabino_backup_remote_enabled` extension
-point, but intentionally rejects `true` because off-site database backups are
-not yet implemented.
-
-## 8. Guarded restore
-
-Place the dump under `/var/backups/sahabino/postgres` and validate its path and
-archive catalog first. Restore requires both a boolean flag and an exact
-confirmation token:
+Run the Ansible manual-backup playbook using the persisted Vault password:
 
 ```bash
-ansible-playbook restore.yml \
-  --ask-vault-pass \
+cd /opt/sahabino/app/deploy/ansible
+sudo env ANSIBLE_COLLECTIONS_PATH=/opt/sahabino/ansible-collections \
+  /opt/sahabino/ansible-venv/bin/ansible-playbook \
+  -i /opt/sahabino/runtime/production.inventory.yml \
+  backup.yml \
+  --vault-password-file /etc/sahabino/ansible-vault-password
+```
+
+## Guarded restore
+
+Restore is deliberately explicit and should not be used as a routine
+troubleshooting shortcut:
+
+```bash
+cd /opt/sahabino/app/deploy/ansible
+sudo env ANSIBLE_COLLECTIONS_PATH=/opt/sahabino/ansible-collections \
+  /opt/sahabino/ansible-venv/bin/ansible-playbook \
+  -i /opt/sahabino/runtime/production.inventory.yml \
+  restore.yml \
+  --vault-password-file /etc/sahabino/ansible-vault-password \
   -e sahabino_restore_dump_path=/var/backups/sahabino/postgres/NAME.dump \
   -e sahabino_restore_confirm=true \
   -e sahabino_restore_confirmation=RESTORE_SAHABINO_PRODUCTION
 ```
 
-The restore playbook refuses paths outside the managed backup directory. It
-validates the dump, stages it safely, stops API/ingestion/crawler, ensures
-PostgreSQL is healthy, creates and verifies a `restore-safety` backup, drops and
-recreates only the configured Sahabino database, restores with
-`pg_restore --exit-on-error`, and checks the restored `alembic_version` against
-the checked-out code head. Application services restart only after that check.
-If restore or verification fails, the application writers remain stopped; use
-the safety backup and inspect the failure before taking further action.
-Creating the safety backup never invokes retention pruning, so an older source
-dump cannot be removed as a side effect of the restore.
+The restore role validates the source archive, stops application writers,
+creates a restore-safety backup, restores only the configured Sahabino database,
+checks the restored Alembic revision, and then restarts application services.
 
-## 9. Operations and SSH forwarding
+## Private observability access
 
-Use the same base/override pair and project name for manual inspection:
-
-```bash
-cd /opt/sahabino/app
-sudo docker compose -p sahabino --env-file .env \
-  -f docker-compose.yml -f compose.prod.yml ps
-sudo docker compose -p sahabino --env-file .env \
-  -f docker-compose.yml -f compose.prod.yml logs --tail=200 api ingestion crawler
-sudo docker compose -p sahabino --env-file .env \
-  -f docker-compose.yml -f compose.prod.yml logs --tail=200 postgres kafka
-```
-
-Grafana, Loki, and Alloy are reachable remotely only through SSH forwarding:
+Production Grafana, Loki, and Alloy bind to loopback only. From a workstation:
 
 ```bash
 ssh -N \
@@ -333,28 +480,63 @@ ssh -N \
   sahabino@SERVER_IP
 ```
 
-Then open Grafana at `http://127.0.0.1:3000`, Loki at
-`http://127.0.0.1:3100`, and Alloy at `http://127.0.0.1:12345`. PostgreSQL and
-Kafka have no host port mapping in production and should not be forwarded or
-exposed publicly.
+Then use:
 
-The API intentionally remains bound to `0.0.0.0:8000` for the current
-deployment/demo stage. This automation does not add authentication, TLS,
-firewall rules, or a reverse proxy, and it does not use ports 80 or 443.
-
-## 10. Static validation
-
-Run these checks from a checkout before deployment:
-
-```bash
-docker compose -p sahabino --env-file .env.example \
-  -f docker-compose.yml -f compose.prod.yml \
-  --profile observability config --quiet
-ansible-playbook -i inventory/production.example.yml --syntax-check provision.yml
-ansible-playbook -i inventory/production.example.yml --syntax-check deploy.yml
-ansible-playbook -i inventory/production.example.yml --syntax-check backup.yml
-ansible-playbook -i inventory/production.example.yml --syntax-check restore.yml
+```text
+Grafana  http://127.0.0.1:3000
+Loki     http://127.0.0.1:3100
+Alloy    http://127.0.0.1:12345
 ```
 
-`deploy.yml` repeats merged Compose validation on the VPS before building or
-migrating and inspects the rendered JSON model for the security invariants.
+The optional `network` profile also keeps SeaweedFS S3 on loopback port 8333.
+If that profile is enabled and a remote client must follow a presigned URL, add:
+
+```text
+-L 8333:127.0.0.1:8333
+```
+
+Do not expose these ports publicly just to access the dashboards/storage API.
+
+## Failure logs and reruns
+
+Protected wrapper logs are written under:
+
+```text
+/var/log/sahabino-deploy-assistant/
+```
+
+The failure classifier provides targeted guidance for common signatures such as:
+
+- dirty Git checkout;
+- Docker Snap confinement;
+- PyPI read timeout/reset and dependency-install failure;
+- Vault/password problems;
+- GitHub Deploy Key/SSH failure;
+- disk exhaustion;
+- OOM conditions;
+- pre-deploy backup failure;
+- port collisions;
+- container health/readiness failure;
+- unreadable container-mounted configuration;
+- missing/non-running Compose services.
+
+No destructive recovery is applied automatically. Fix the actual prerequisite
+and rerun the same wrapper command.
+
+## Manual validation
+
+The wrapper runs Ansible syntax checks itself. From a development checkout, the
+merged production Compose model can also be checked without starting services:
+
+```bash
+docker compose \
+  --project-name sahabino \
+  --env-file .env.example \
+  --file docker-compose.yml \
+  --file compose.prod.yml \
+  --profile observability \
+  config --quiet
+```
+
+For the complete post-deploy operations/check command set, continue with
+[`docs/operations/README.md`](../../docs/operations/README.md).
