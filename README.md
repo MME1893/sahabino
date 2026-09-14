@@ -1,477 +1,213 @@
 # Sahabino
 
-A data collection and analytics platform for monitoring application metrics,
-reviews, and network-quality measurements.
+Sahabino is a data collection and analytics platform for monitoring application
+metadata, reviews, and network-quality measurements.
 
-The current service provides an application registry, an hourly Google Play
-crawler, crawler lifecycle persistence, versioned collected-data events through
-Kafka, and synchronous idempotent ingestion into PostgreSQL.
+It combines an application registry, scheduled Google Play crawling, Kafka-based
+event delivery, idempotent ingestion into PostgreSQL, optional packet-capture
+analysis, and centralized production logging.
 
-## Requirements
+## Quick install
 
-- Python 3.12
-- [uv](https://docs.astral.sh/uv/)
-- PostgreSQL 16 and Apache Kafka 4.3.1, or Docker with Docker Compose
-- TShark for host-side network analysis (included in the analyzer image)
-- A running Docker daemon when integration tests use Testcontainers
-
-## Local setup
-
-Install the locked development environment and create a local configuration file:
+For a local Docker-based setup:
 
 ```bash
-uv sync
 cp .env.example .env
-uv run pre-commit install
-```
 
-The example configuration connects host processes to PostgreSQL on
-`localhost:5432` and Kafka on `localhost:9092` with development-only settings.
-Database configuration is read from `SAHABINO_DATABASE_URL` and must use a
-Psycopg 3 SQLAlchemy URL, for example:
-
-```text
-postgresql+psycopg://sahabino:sahabino@localhost:5432/sahabino
-```
-
-Kafka topic topology and client behavior are configured centrally with:
-
-```text
-SAHABINO_KAFKA_TOPIC_PARTITIONS=3
-SAHABINO_KAFKA_TOPIC_REPLICATION_FACTOR=1
-SAHABINO_KAFKA_CONSUMER_AUTO_OFFSET_RESET=earliest
-SAHABINO_INGESTION_CONSUMER_GROUP_ID=sahabino-ingestion-v1
-SAHABINO_KAFKA_PRODUCER_QUEUE_FULL_MAX_RETRIES=3
-SAHABINO_KAFKA_PRODUCER_QUEUE_FULL_POLL_TIMEOUT_SECONDS=0.1
-```
-
-Start only PostgreSQL with Docker, apply the schema and seeded reference data,
-then run the API locally:
-
-```bash
-docker compose up -d postgres
-uv run alembic upgrade head
-uv run uvicorn sahabino.main:app --reload
-```
-
-Migrations are intentionally explicit; the API does not run Alembic at startup.
-Kafka is also independent of API startup and is not contacted by the API.
-
-Once running, the interactive Swagger UI is available at
-<http://localhost:8000/docs> and the OpenAPI document at
-<http://localhost:8000/openapi.json>.
-
-## Docker Compose
-
-The Compose stack contains PostgreSQL, a single-node Apache Kafka KRaft broker,
-the API, crawler, and ingestion worker. Build the image, start infrastructure,
-run migrations and topic provisioning explicitly, and then start the processes:
-
-```bash
 docker compose build api crawler ingestion
 docker compose up -d postgres kafka
+
 docker compose run --rm api uv run --no-sync alembic upgrade head
 docker compose run --rm api uv run --no-sync python -m sahabino.messaging.admin
+
 docker compose up -d api crawler ingestion
 ```
 
-PostgreSQL and Kafka data are retained in named volumes. Compose supplies the API
-with container-network addresses; `.env.example` is for processes run directly
-on the host. Kafka advertises two separate listeners:
+Open the API documentation at:
 
 ```text
-Host processes:             localhost:9092
-Docker Compose services:    kafka:19092
+http://localhost:8000/docs
 ```
 
-The Compose Kafka service disables automatic topic creation and has a readiness
-healthcheck based on Kafka's broker API tool. This one-broker, one-controller
-topology is for local development, not production high availability. Its topic
-replication factor defaults to 1 because only one broker is available.
-
-## Kafka messaging
-
-Start Kafka, check its health, and explicitly create or verify Sahabino's topics
-from the host:
-
-```bash
-docker compose up -d kafka
-docker compose ps kafka
-uv run python -m sahabino.messaging.admin
-```
-
-The broker can also be queried directly with its bundled tooling:
-
-```bash
-docker compose exec kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092
-```
-
-The canonical domain topics are:
-
-```text
-playstore.app-stats.v1
-playstore.review-observed.v1
-network.capture-ready.v1
-network.analysis-collected.v1
-```
-
-Canonical topic names are separate from deployment topology. Local settings
-explicitly provision each topic with three partitions and replication factor 1.
-Multi-broker deployments should configure an appropriate replication factor,
-typically greater than 1; it cannot exceed the number of available brokers. The
-admin command is idempotent for correctly configured topics. It validates the
-partition count and replication factor of existing topics and fails with an
-actionable mismatch error instead of mutating topic topology automatically.
-
-Events use UTF-8 JSON validated by a generic Pydantic envelope with `event_id`,
-`event_type`, `schema_version`, `occurred_at`, and a typed `payload`. Envelope
-UUIDs and UTC timestamps are generated by default, supplied timezone-aware
-timestamps are normalized to UTC, schema versions start at 1, and unknown
-envelope fields are rejected. Shared `AppStatsCollectedV1` and
-`ReviewObservedV1` payloads let crawler publication and future ingestion use the
-same contracts without coupling ingestion to crawler modules.
-
-Publishers must provide a non-blank message key, which the producer encodes as
-UTF-8. The reusable synchronous producer enables Kafka idempotence and `acks=all`,
-tracks delivery callbacks, applies a small bounded queue-full poll/retry policy,
-and requires an explicit successful flush/close boundary. Producer idempotence
-only reduces duplicates caused by producer retries; it does not provide
-end-to-end exactly-once delivery.
-
-The consumer supports `earliest` (the default) or `latest` offset reset behavior
-while continuing to disable automatic commits and automatic offset storage.
-Ingestion uses at-least-once delivery with idempotent database effects,
-`event_id` deduplication, and an explicit Kafka offset commit only after a
-successful PostgreSQL transaction.
-
-## Ingestion
-
-Run the standalone serial ingestion worker with:
-
-```bash
-uv run python -m sahabino.ingestion
-```
-
-One consumer in `SAHABINO_INGESTION_CONSUMER_GROUP_ID` subscribes to both Play
-Store topics and the network-analysis topic. Each valid message claims its event ID and performs its business
-write in one PostgreSQL transaction. The Kafka offset is committed only after
-the database commit. Invalid contracts are logged, skipped, and acknowledged;
-database, business-consistency, and Kafka commit failures terminate the worker
-so Compose can restart it.
-
-App-stat events create one immutable snapshot per crawl task. Review events
-atomically upsert latest state and add lightweight per-task observations. A late
-observation can move `first_observed_at` earlier and add history, but cannot
-replace newer current review fields. For equal observation timestamps, the
-incoming event deterministically wins.
-
-## Google Play crawler
-
-The crawler applies Hexagonal Architecture within its own subsystem:
-
-```text
-crawler domain DTOs/errors
-          ^
-crawler application commands, ports, and policies
-          ^
-HTTP, scraper, PostgreSQL, Kafka, proxy, and scheduler adapters
-```
-
-At the start of each run it calls `GET /applications?active=true`; crawler
-business logic never reads the `applications` table. PostgreSQL direct writes are
-limited to `crawl_runs` and `crawl_tasks`. App statistics and one event per review
-are sent to Kafka and are not persisted as analytical rows by the crawler.
-
-Each active application is one bounded `ThreadPoolExecutor` command. Its
-`app_details` and `reviews` lifecycle tasks run sequentially and complete
-independently, so either can succeed when the other fails. Reviews use newest
-ordering, stop at 100, and retain positions 1 through 100.
-
-The primary `gplay-scraper==1.0.6` adapter uses a task-local
-`ControlledGPlayHttpClient` and `curl_cffi` session. Sahabino bypasses the
-library's decorated retry and backend-fallback paths, so every primary physical
-request consumes a token from the shared process-wide token bucket. Bounded
-Tenacity retries use exponential backoff with jitter; a valid `Retry-After` on
-429 or 503 is a minimum delay. HTTP access rejection, proxy authentication,
-timeout, rate limiting, app absence, legal restriction, 5xx, parser, schema, and
-local token-wait failures remain distinct.
-
-`google-play-scraper==1.2.7` is a direct-only secondary parser/implementation.
-Only explicit parser, schema, or known primary implementation failures select it.
-Throttling, timeouts, proxy failures, upstream 5xx, invalid packages, and missing
-apps never select the secondary. It is not an alternate IP strategy.
-
-Proxy mode supports no proxy, static/list configuration, round-robin selection,
-sticky per-application leases, health thresholds, cooldown, bounded rotation,
-and configurable direct fallback. A rotation closes the old transport and builds
-a new primary stack; credentials are represented only by `SecretStr` and safe
-`proxy-N` identifiers, including at the Settings boundary. A 403 temporarily
-cools the active proxy; a 407 marks it `UNHEALTHY`. Unhealthy proxies are not
-automatically recovered in v1. There is deliberately no per-proxy rate limiter.
-
-The process-wide circuit breaker represents Google Play availability with
-`CLOSED`, `OPEN`, and `HALF_OPEN` states. Upstream 5xx, terminal direct timeouts,
-and repeated throttling may count. Parser/schema failures, invalid packages,
-missing apps, and proxy-attributed connection failures do not.
-
-App update precision is a calendar date: `store_updated_on: date | None`. Both
-adapters normalize timestamps to their UTC calendar date or preserve an upstream
-date directly; no time-of-day is fabricated and no secondary request is made just
-to obtain a timestamp.
-
-Run one manual cycle or the blocking scheduler with:
-
-```bash
-uv run python -m sahabino.crawler crawl-once
-uv run python -m sahabino.crawler scheduler
-```
-
-Manual runs persist `trigger_type=manual`. Scheduled runs persist `scheduled`,
-run immediately at process start, then use the configured interval (60 minutes by
-default), coalesce missed executions, and allow only one in-process instance.
-The crawler does not require Kafka Admin privileges at normal startup. Provision
-topics explicitly with `python -m sahabino.messaging.admin`; composition-root
-provisioning exists only as an opt-in for tests and tools. Alembic remains
-explicit and is never run by crawler startup.
-
-All crawler settings use the `SAHABINO_` prefix and are listed in
-`.env.example`. They cover interval/concurrency, locale, request timeout, retry,
-global rate limiting, proxy pool/direct fallback, circuit breaker, secondary
-fallback, and Registry base URL. Proxy URLs use a JSON list such as
-`["http://user:password@proxy.example:8080"]`; never commit real credentials.
-
-Concurrency, global rate limiting, retry, proxy health, adapter fallback, and the
-circuit breaker are separate policies with one owner each. The local token bucket
-is defensive pacing and is not a claim about any official Google quota. See
-[`docs/crawler.md`](docs/crawler.md) for boundary and state details.
-
-## API
-
-The implemented endpoints are:
-
-```text
-POST   /applications
-GET    /applications
-GET    /applications/{application_id}
-PATCH  /applications/{application_id}
-DELETE /applications/{application_id}
-GET    /categories
-POST   /network-captures
-GET    /network-captures
-GET    /network-captures/{capture_id}
-POST   /network-captures/{capture_id}/complete
-POST   /network-captures/{capture_id}/download-url
-```
-
-`GET /applications` accepts the optional `active=true` or `active=false` filter.
-Deleting an application deactivates it without removing its database row.
-Categories are seeded by Alembic and are read-only through the API.
-
-## Network analysis quick start
-
-The opt-in `network` profile adds SeaweedFS S3-compatible storage and a dedicated
-TShark analyzer image. PCAPNG is recommended; classic PCAP is supported with
-direction-dependent metrics degraded to NULL when metadata is unavailable.
-
-```bash
-docker compose --profile network build api ingestion network-analyzer
-docker compose --profile network up -d postgres kafka seaweedfs
-docker compose run --rm api uv run --no-sync alembic upgrade head
-docker compose run --rm api uv run --no-sync python -m sahabino.messaging.admin
-docker compose --profile network run --rm network-analyzer \
-  uv run --no-sync python -m sahabino.network storage-init
-docker compose --profile network up -d api ingestion network-analyzer
-bash scripts/smoke-network-pipeline.sh
-```
-
-The lifecycle is metadata registration, direct presigned upload, explicit
-completion, Kafka dispatch, TShark analysis, and idempotent ingestion. See the
-[network architecture, API, metric formulas, operations, and limitations](docs/network/README.md).
-
-## Centralized logging
-
-Sahabino uses Python's standard `logging` API and writes either human-readable
-console records or structured JSON to stdout. Configure it with
-`SAHABINO_LOG_LEVEL`, `SAHABINO_LOG_FORMAT`, and `SAHABINO_ENVIRONMENT`; Compose
-sets the API, crawler, and ingestion worker to JSON automatically.
-
-Start only the normal local infrastructure with:
-
-```bash
-docker compose up -d postgres kafka
-```
-
-Start the application and opt-in logging stack with:
+To add the local logging stack:
 
 ```bash
 docker compose --profile observability up -d
 ```
 
-Alloy collects only Docker containers labeled `com.sahabino.logs=true`, parses
-the application JSON, and forwards it to Loki. Grafana automatically provisions
-Loki and the **Sahabino Logging Smoke Dashboard**. The local endpoints are:
+For a production deployment, use the deployment assistant instead of manually
+reconstructing the Compose and Ansible sequence:
 
-```text
-Grafana:  http://localhost:3000
-Loki:     http://localhost:3100
-Alloy UI: http://localhost:12345
+```bash
+sudo deploy/ansible/sahabino-deploy.sh
 ```
 
-The credentials in `.env.example` are for local development only. Grafana,
-Loki, and Alloy are infrastructure concerns rather than application
-dependencies. Metrics, tracing, and OpenTelemetry are intentionally deferred.
+See [Development setup](docs/development.md) for local installation details and
+[Production deployment](deploy/ansible/README.md) for the complete server flow.
 
-## Full runtime smoke test
+## System flow
 
-For local end-to-end acceptance, Sahabino includes:
-
-```text
-scripts/smoke-full-pipeline.sh
-```
-
-It validates the real Compose/runtime path:
+The main application pipeline is:
 
 ```text
 Application Registry
-→ real Google Play crawler
-→ crawler lifecycle PostgreSQL
-→ Kafka
-→ ingestion
-→ ingestion PostgreSQL
-→ Alloy
-→ Loki
-→ Grafana provisioning
+        │
+        ▼
+Scheduled Google Play Crawler
+        │
+        ├── crawl lifecycle ───────────────► PostgreSQL
+        │
+        └── collected application/review events
+                            │
+                            ▼
+                           Kafka
+                            │
+                            ▼
+                     Ingestion Worker
+                            │
+                            ▼
+                        PostgreSQL
 ```
 
-Run it with existing project images:
+Network analysis is an optional second pipeline:
+
+```text
+Network Capture API
+        │
+        ▼
+S3-compatible Object Storage
+        │
+        ▼
+Kafka capture-ready event
+        │
+        ▼
+TShark Network Analyzer
+        │
+        ▼
+Kafka analysis event
+        │
+        ▼
+Ingestion Worker
+        │
+        ▼
+PostgreSQL
+```
+
+Production application logs follow a separate observability path:
+
+```text
+API / Crawler / Ingestion
+        │
+        ▼
+ structured stdout logs
+        │
+        ▼
+       Alloy
+        │
+        ▼
+        Loki
+        │
+        ▼
+      Grafana
+```
+
+## Core components
+
+| Component | Responsibility |
+| --- | --- |
+| **Application Registry** | Stores and manages the applications Sahabino monitors. |
+| **Crawler** | Runs scheduled Google Play collection and records crawl lifecycle state. |
+| **Messaging** | Defines event contracts, topics, producers, consumers, and topic provisioning. |
+| **Ingestion** | Consumes collected events and applies idempotent PostgreSQL writes. |
+| **Network Analysis** | Handles capture metadata, object storage, TShark analysis, and analysis events. |
+| **Observability** | Collects structured application logs through Alloy, Loki, and Grafana. |
+| **Deployment** | Uses Ansible plus the deployment assistant for repeatable production provisioning and releases. |
+
+## Architecture principles
+
+A few boundaries are intentionally kept explicit:
+
+- schema changes are applied through Alembic migrations rather than application startup;
+- the crawler records lifecycle state directly, but analytical crawler output is delivered through Kafka;
+- ingestion commits Kafka offsets only after the corresponding database transaction succeeds;
+- message handling is designed for at-least-once delivery with idempotent database effects;
+- network-capture files are stored outside PostgreSQL and analyzed asynchronously;
+- production observability services are operational infrastructure, not application dependencies;
+- production deployment keeps secrets, generated runtime state, and the Ansible controller outside normal source-control state where appropriate.
+
+## Repository layout
+
+```text
+src/sahabino/
+├── app_registry/        application registry API and persistence
+├── crawler/             Google Play collection pipeline
+├── ingestion/           Kafka-to-PostgreSQL ingestion
+├── messaging/           Kafka contracts and clients
+├── network/             capture and network-analysis pipeline
+├── common/              shared configuration/logging
+└── db/                  database infrastructure
+
+deploy/ansible/          production provisioning and deployment
+infrastructure/          observability and network-service configuration
+migrations/              Alembic database migrations
+scripts/                 smoke-test and utility scripts
+tests/                   unit, integration, system, and external smoke tests
+```
+
+## Documentation
+
+Use the focused guides below instead of treating this README as an operations
+manual:
+
+- [Development setup](docs/development.md) — local environment, Docker workflow,
+  migrations, topic provisioning, and developer commands.
+- [Configuration reference](docs/configuration.md) — environment variables and
+  configuration groups.
+- [Production deployment](deploy/ansible/README.md) — deploy assistant, Ansible,
+  Vault, Deploy Key, permissions, backup/restore, and deployment troubleshooting.
+- [Production operations](docs/operations/README.md) — start/stop/up/down, health
+  checks, logs, SSH forwarding, database/Kafka checks, and routine operations.
+- [Crawler documentation](docs/crawler/README.md) — crawler architecture,
+  resilience, adapters, configuration, testing, and maintenance.
+- [Network analysis](docs/network/README.md) — capture lifecycle, storage,
+  analysis, API, metrics, and operational behavior.
+- [Full runtime smoke test](docs/testing/smoke-full-pipeline.md) — end-to-end
+  validation of the real Compose pipeline.
+- [Contributing](CONTRIBUTING.md) — Git workflow, commit conventions, and quality
+  checks.
+
+## API surface
+
+The API currently exposes application-registry and network-capture operations.
+The interactive OpenAPI documentation is the canonical way to inspect request
+and response schemas while the service is running:
+
+```text
+http://localhost:8000/docs
+```
+
+Main endpoint groups:
+
+```text
+/applications
+/categories
+/network-captures
+```
+
+## Running and verification
+
+For local development, use the commands in
+[Development setup](docs/development.md).
+
+For production, use the deployment assistant for releases and the
+[operations runbook](docs/operations/README.md) for routine service control and
+health checks.
+
+A full local runtime smoke test is also available:
 
 ```bash
 bash scripts/smoke-full-pipeline.sh
 ```
 
-Rebuild the API/crawler/ingestion images first when source or dependencies have
-changed:
-
-```bash
-bash scripts/smoke-full-pipeline.sh --build
-```
-
-If no active Registry applications exist, the optional seed mode creates
-Telegram and WhatsApp when those package names are absent:
-
-```bash
-bash scripts/smoke-full-pipeline.sh --seed
-```
-
-The smoke test is stateful but non-destructive: it creates normal crawl/Kafka/
-ingestion/log data and preserves named volumes. It temporarily isolates the
-crawler scheduler, drains old ingestion backlog, stops ingestion to measure the
-new crawler Kafka delta, restarts ingestion, requires consumer lag to return to
-zero, validates run-specific database rows, and checks structured service logs
-in Loki. Because it performs real Google Play requests, it is intended for local
-acceptance/demo use rather than ordinary CI.
-
-Skip only the logging-stack checks with:
-
-```bash
-bash scripts/smoke-full-pipeline.sh --skip-observability
-```
-
-Stop containers after the run while preserving named volumes with:
-
-```bash
-bash scripts/smoke-full-pipeline.sh --down-after
-```
-
-See [`docs/testing/smoke-full-pipeline.md`](docs/testing/smoke-full-pipeline.md)
-for flags, environment overrides, exact assertions, cache behavior, safety and
-side effects, troubleshooting, Loki queries, and the distinction between this
-runtime smoke test and the deterministic pytest integration suite.
-
-## Tests and quality checks
-
-Run the full suite and repository checks with:
-
-```bash
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
-uv run pre-commit run --all-files
-```
-
-Run only the PostgreSQL-backed Application Registry integration suite with:
-
-```bash
-uv run pytest tests/integration/app_registry
-```
-
-Run the real Kafka publish/consume integration test with:
-
-```bash
-uv run pytest tests/integration/kafka
-```
-
-Run crawler unit tests and crawler/ingestion integration suites with:
-
-```bash
-uv run pytest tests/unit/crawler
-uv run pytest tests/integration/crawler
-uv run pytest tests/integration/ingestion
-```
-
-The automated crawler-to-ingestion full-flow integration test is:
-
-```bash
-uv run pytest tests/integration/ingestion/test_crawler_to_ingestion_flow.py -v
-```
-
-It uses fake Registry/Google Play boundaries while exercising the real crawler,
-PostgreSQL lifecycle persistence, Kafka producer/broker/consumer, ingestion
-worker, and ingestion PostgreSQL persistence. No real Google Play, Compose
-application services, Loki, Alloy, or Grafana are required by that pytest test.
-
-Crawler tests use fake Play Store adapters and never require Google Play. The
-production controlled-primary smoke is skipped by default; opt in manually with:
-
-```bash
-SAHABINO_RUN_EXTERNAL_PLAYSTORE_SMOKE=1 uv run pytest tests/external/test_controlled_primary_smoke.py
-```
-
-This makes one app-details request and one small reviews request through the
-actual `GPlayScraperAdapter -> ControlledGPlayHttpClient -> CurlCffiTransport`
-stack. Do not enable it in normal pytest or CI.
-
-Run all integration suites with:
-
-```bash
-uv run pytest tests/integration
-```
-
-When `TEST_KAFKA_BOOTSTRAP_SERVERS` is set, Kafka integration tests use that
-broker. For example, after starting the Compose broker:
-
-```bash
-TEST_KAFKA_BOOTSTRAP_SERVERS=localhost:9092 uv run pytest tests/integration/kafka
-```
-
-Compose and CI use `apache/kafka:4.3.1`; the Python Testcontainers fallback uses
-`confluentinc/cp-kafka:7.6.0`. Testcontainers Python's Kafka convenience helper
-currently supports the Confluent image path, and both images expose the standard
-Kafka protocol behavior exercised here. Sahabino currently tests generic Kafka
-behavior only and deliberately avoids a custom `GenericContainer` solely to make
-the image names match. Revisit this choice when Testcontainers Python offers
-stable direct Apache Kafka image support.
-
-When no external broker is configured, the tests start that pinned fallback
-image in KRaft mode. This requires Docker and may download the image on first use.
-Tests create and clean up an isolated topic, use bounded polling, verify typed
-envelope and key round-tripping, explicitly commit the consumed offset, and prove
-that a replacement consumer in the same group does not receive that event again.
-
-When `TEST_DATABASE_URL` is not set, database integration tests start
-`postgres:16-alpine` through Testcontainers. This requires a running Docker
-daemon. To use an existing PostgreSQL instance instead, set `TEST_DATABASE_URL`
-to a Psycopg 3 SQLAlchemy URL before running pytest. The test suite applies
-Alembic migrations to the selected test database; it does not use
-`Base.metadata.create_all()`.
+Detailed behavior, flags, and side effects are documented in the
+[smoke-test guide](docs/testing/smoke-full-pipeline.md).
