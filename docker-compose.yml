@@ -173,12 +173,14 @@ services:
       - seaweedfs_data:/data
       - ./infrastructure/network/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
 
+
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9333/cluster/status"]
+      test: ["CMD", "wget", "-q", "--spider", "http://seaweedfs:9333/cluster/status"]
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 10s
+
 
   network-analyzer:
     build:
