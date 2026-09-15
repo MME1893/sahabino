@@ -60,6 +60,10 @@ sahabino_object_storage_exposure: private
 sahabino_object_storage_bind_address: 127.0.0.1
 sahabino_runtime_dir: /opt/sahabino/runtime
 sahabino_seaweedfs_s3_config_path: /opt/sahabino/runtime/seaweedfs-s3.json
+sahabino_seaweedfs_runtime_user: seaweed
+sahabino_seaweedfs_image: chrislusf/seaweedfs:4.46
+sahabino_seaweedfs_secret_group: sahabino-seaweedfs
+sahabino_seaweedfs_secret_gid: 1999
 # Embedded in presigned URLs. Loopback keeps SeaweedFS private; remote clients
 # can reach it through an SSH tunnel when the optional network profile is used.
 sahabino_object_storage_public_endpoint_url: http://127.0.0.1:8333
@@ -76,6 +80,7 @@ sahabino_network_stale_analysis_seconds: 1800
 sahabino_crawler_drain_timeout_seconds: 600
 sahabino_crawler_drain_poll_seconds: 10
 sahabino_allow_active_crawl_interruption: false
+sahabino_deploy_interactive: false
 
 sahabino_playstore_crawl_interval_minutes: 60
 sahabino_playstore_max_concurrent_apps: 3

@@ -55,6 +55,8 @@ GRAFANA_PORT="${SAHABINO_GRAFANA_PORT:-3000}"
 LOKI_PORT="${SAHABINO_LOKI_PORT:-3100}"
 ALLOY_PORT="${SAHABINO_ALLOY_PORT:-12345}"
 OBJECT_STORAGE_PORT="${SAHABINO_OBJECT_STORAGE_PORT:-8333}"
+SEAWEEDFS_RUNTIME_USER="${SAHABINO_SEAWEEDFS_RUNTIME_USER:-seaweed}"
+SEAWEEDFS_SECRET_GROUP="${SAHABINO_SEAWEEDFS_SECRET_GROUP:-sahabino-seaweedfs}"
 INGESTION_CONSUMER_GROUP="${SAHABINO_INGESTION_CONSUMER_GROUP:-sahabino-ingestion-v1}"
 KAFKA_BOOTSTRAP_INTERNAL="${SAHABINO_KAFKA_BOOTSTRAP_INTERNAL:-kafka:19092}"
 
@@ -1927,10 +1929,13 @@ select_object_storage_exposure() {
     OBJECT_STORAGE_PUBLIC_ENDPOINT=http://127.0.0.1:8333
     return 0
   fi
-  warn "Public object storage has no TLS or reverse proxy; this assistant does not manage the firewall."
+  if [[ -z "$OBJECT_STORAGE_PUBLIC_ENDPOINT" && $ASSUME_YES -eq 0 ]]; then
+    read -r -p 'Externally usable object-storage endpoint (http(s) origin): ' OBJECT_STORAGE_PUBLIC_ENDPOINT
+  fi
   [[ "$OBJECT_STORAGE_PUBLIC_ENDPOINT" =~ ^https?://[^/[:space:]]+(:[0-9]+)?$ ]] || {
     error "Public mode requires an externally usable --object-storage-public-endpoint origin."; return 1;
   }
+  warn "Public object storage has no TLS or reverse proxy; this assistant does not manage the firewall."
   if [[ "$CONFIRM_PUBLIC_OBJECT_STORAGE" != 1 ]]; then
     (( ASSUME_YES )) && { error "Public mode requires --confirm-public-object-storage."; return 1; }
     ask_yes_no "Expose SeaweedFS on port 8333 with those unmanaged responsibilities?" no || return 1
@@ -1960,7 +1965,8 @@ run_deploy() {
       -e "sahabino_object_storage_exposure=$OBJECT_STORAGE_EXPOSURE" \
       -e "sahabino_object_storage_bind_address=$OBJECT_STORAGE_BIND_ADDRESS" \
       -e "sahabino_object_storage_public_endpoint_url=$OBJECT_STORAGE_PUBLIC_ENDPOINT" \
-      -e "sahabino_allow_active_crawl_interruption=$ALLOW_ACTIVE_CRAWL_INTERRUPTION"
+      -e "sahabino_allow_active_crawl_interruption=$ALLOW_ACTIVE_CRAWL_INTERRUPTION" \
+      -e "sahabino_deploy_interactive=$((1 - ASSUME_YES))"
   ) 2>&1 | tee -a "$RUN_LOG" "$deploy_log"
   rc=${PIPESTATUS[0]}; set -e
   if (( rc != 0 )); then diagnose_failure "$deploy_log" deploy; return "$rc"; fi
@@ -2091,6 +2097,40 @@ require_private_file_mode() {
   fi
 }
 
+audit_seaweedfs_runtime_secret() {
+  local dir="$RUNTIME_DIR" file="$RUNTIME_DIR/seaweedfs-s3.json" resolved_dir resolved_file
+  local dir_mode file_mode file_owner file_group
+  [[ -d "$dir" && ! -L "$dir" ]] || { error "SeaweedFS runtime directory must be a non-symlink directory: $dir"; return 1; }
+  [[ -f "$file" && ! -L "$file" ]] || { error "SeaweedFS configuration must be a non-symlink regular file: $file"; return 1; }
+  resolved_dir=$(realpath -e -- "$dir") || return 1
+  resolved_file=$(realpath -e -- "$file") || return 1
+  [[ "$resolved_dir" == "$(realpath -e -- "$APP_PARENT")/runtime" && "$resolved_file" == "$resolved_dir/seaweedfs-s3.json" ]] || {
+    error "SeaweedFS runtime secret escapes the intended runtime directory."; return 1;
+  }
+  dir_mode=$(stat -c '%a' "$dir"); file_mode=$(stat -c '%a' "$file")
+  file_owner=$(stat -c '%U' "$file"); file_group=$(stat -c '%G' "$file")
+  [[ "$dir_mode" == 710 && "$file_mode" == 640 && "$file_owner" == root && "$file_group" == "$SEAWEEDFS_SECRET_GROUP" ]] || {
+    error "SeaweedFS runtime permissions must be root:$SEAWEEDFS_SECRET_GROUP 0710(directory)/0640(file)."; return 1;
+  }
+  if command -v setpriv >/dev/null && getent passwd nobody >/dev/null; then
+    setpriv --reuid=nobody --regid=nobody --clear-groups test ! -r "$file" || {
+      error "An unrelated host user can read the SeaweedFS credential file."; return 1;
+    }
+  fi
+}
+
+verify_seaweedfs_runtime_identity() {
+  local identity
+  identity=$(compose exec -T seaweedfs id -un) || return 1
+  [[ "$identity" == "$SEAWEEDFS_RUNTIME_USER" ]] || {
+    error "SeaweedFS runs as '$identity', expected '$SEAWEEDFS_RUNTIME_USER'."; return 1;
+  }
+  compose exec -T seaweedfs test -r /etc/seaweedfs/s3.json || {
+    error "The effective SeaweedFS runtime user cannot read /etc/seaweedfs/s3.json."; return 1;
+  }
+  ok "SeaweedFS runtime identity and credential readability passed ($identity)."
+}
+
 audit_sensitive_permissions() {
   local failed=0 home key config known_hosts vault
   home=$(deploy_home)
@@ -2105,7 +2145,7 @@ audit_sensitive_permissions() {
   require_private_file_mode "$key" "GitHub Deploy Key private key" || failed=1
   require_private_file_mode "$config" "Deploy-user SSH config" || failed=1
   require_private_file_mode "$INVENTORY_FILE" "Runtime Ansible inventory" || failed=1
-  require_private_file_mode "$RUNTIME_DIR/seaweedfs-s3.json" "SeaweedFS S3 configuration" || failed=1
+  audit_seaweedfs_runtime_secret || failed=1
 
   if [[ -f "$known_hosts" ]]; then
     local kh_mode
@@ -2143,12 +2183,22 @@ verify_deployment() {
 
   compose ps
   show_service_diagnostics || return 1
+  verify_seaweedfs_runtime_identity || return 1
   wait_for_kafka_health || { error "Kafka did not become healthy during post-deploy verification."; return 1; }
   compose run --rm --no-deps api uv run --no-sync python -m sahabino.network storage-init >/dev/null || {
     error "SeaweedFS bucket access failed with deployed credentials."; compose logs --tail=120 seaweedfs >&2 || true; return 1;
   }
   compose exec -T network-analyzer tshark --version >/dev/null || {
     error "TShark is unavailable in network-analyzer."; compose logs --tail=120 network-analyzer >&2 || true; return 1;
+  }
+  local analyzer_group analyzer_members
+  analyzer_group=$(awk -F= '$1=="SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID" {print $2}' "$APP_DIR/.env")
+  analyzer_members=$(compose exec -T kafka timeout 20s /opt/kafka/bin/kafka-consumer-groups.sh \
+    --bootstrap-server "$KAFKA_BOOTSTRAP_INTERNAL" --describe --members --group "$analyzer_group") || {
+    error "The network analyzer Kafka consumer group could not be queried."; return 1;
+  }
+  [[ "$analyzer_members" == *"CONSUMER-ID"* && "$analyzer_members" == *"$analyzer_group"* ]] || {
+    error "The analyzer is running but has not joined its configured Kafka consumer group."; return 1;
   }
 
   wait_http_ready "API" "http://127.0.0.1:$API_PORT/docs" 60 2 || {
@@ -2212,31 +2262,34 @@ WHERE ct.status <> '\''succeeded'\'' ORDER BY a.package_name, ct.task_type;
 print_access_hints() {
   local deployed_storage_exposure
   deployed_storage_exposure=$(awk -F= '$1=="SAHABINO_OBJECT_STORAGE_EXPOSURE" {print $2}' "$APP_DIR/.env" 2>/dev/null || true)
-  if [[ "$deployed_storage_exposure" == public ]]; then
-    info "Object storage is publicly exposed at the operator-configured endpoint; no SSH forward is required for it."
-    return 0
-  fi
   cat <<EOF_ACCESS
 
 ${C_BOLD}Private observability access${C_RESET}
-Grafana, Loki and Alloy stay loopback-only. Private object storage uses the same tunnel:
+Grafana, Loki and Alloy stay loopback-only. From your workstation:
 
   ssh -N \\
     -L $GRAFANA_PORT:127.0.0.1:$GRAFANA_PORT \\
     -L $LOKI_PORT:127.0.0.1:$LOKI_PORT \\
     -L $ALLOY_PORT:127.0.0.1:$ALLOY_PORT \\
-    -L $OBJECT_STORAGE_PORT:127.0.0.1:$OBJECT_STORAGE_PORT \\
     $DEPLOY_USER@SERVER_IP
 
 Then open:
   Grafana: http://127.0.0.1:$GRAFANA_PORT
   Loki:    http://127.0.0.1:$LOKI_PORT
   Alloy:   http://127.0.0.1:$ALLOY_PORT
-  SeaweedFS (private mode): http://127.0.0.1:$OBJECT_STORAGE_PORT
 
 API exposure currently configured as: $API_BIND_ADDRESS:$API_PORT
 The assistant does not configure TLS/reverse-proxy/firewall policy.
 EOF_ACCESS
+  if [[ "$deployed_storage_exposure" == public ]]; then
+    info "Object storage is publicly exposed at the operator-configured endpoint; no SSH forward is required for it."
+  else
+    cat <<EOF_STORAGE
+Private object storage tunnel:
+  ssh -N -L $OBJECT_STORAGE_PORT:127.0.0.1:$OBJECT_STORAGE_PORT $DEPLOY_USER@SERVER_IP
+  SeaweedFS: http://127.0.0.1:$OBJECT_STORAGE_PORT
+EOF_STORAGE
+  fi
 }
 
 main() {

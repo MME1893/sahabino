@@ -154,6 +154,11 @@ services:
     pull_policy: missing
     profiles:
       - network
+    # The pinned image provides the non-root seaweed account. Force that
+    # identity and grant only the dedicated host-secret group read access.
+    user: seaweed
+    group_add:
+      - "${SAHABINO_SEAWEEDFS_SECRET_GID:-1999}"
 
     command:
       [

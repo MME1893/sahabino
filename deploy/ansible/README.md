@@ -551,11 +551,15 @@ acknowledgement because the assistant configures neither TLS, a reverse proxy,
 nor the firewall.
 
 Ansible atomically renders Vault-derived S3 credentials to
-`/opt/sahabino/runtime/seaweedfs-s3.json` as root-owned mode `0600`. It starts
+`/opt/sahabino/runtime/seaweedfs-s3.json` as `root:sahabino-seaweedfs` mode
+`0640`, below a mode-`0710` runtime directory. Compose forces the image's
+built-in non-root `seaweed` identity and grants its dedicated supplementary GID;
+verification executes `test -r` as that effective container identity. It starts
 SeaweedFS and runs the idempotent `python -m sahabino.network storage-init`
 before waiting for persisted active crawl runs to drain. The bounded drain
-defaults to abort rather than interrupting work; automation must explicitly use
-`--allow-active-crawl-interruption` to override that safety decision.
+defaults to abort rather than interrupting work. Interactive operators may
+explicitly choose interruption after timeout; automation must explicitly use
+`--allow-active-crawl-interruption` and still waits through the drain window.
 
 For private access, forward all operator endpoints from a workstation:
 

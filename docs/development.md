@@ -215,5 +215,6 @@ workflow.
 Network services remain opt-in locally: use `docker compose --profile network
 up`. The committed SeaweedFS configuration contains development-only
 credentials. Run `scripts/smoke-network-pipeline.sh` manually only against a
-local/test stack; production deployment intentionally performs readiness and
+local/test stack (or another deliberately isolated disposable environment),
+never production; production deployment intentionally performs readiness and
 connectivity checks without inserting synthetic captures.

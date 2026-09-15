@@ -127,4 +127,7 @@ The distinct public endpoint is embedded in presigned URLs: private production
 uses `http://127.0.0.1:8333` for an SSH local forward, while public mode requires
 an operator-supplied HTTP(S) origin. Production credentials come from Ansible
 Vault and the generated SeaweedFS bind source is outside the Git checkout at
-`/opt/sahabino/runtime/seaweedfs-s3.json` (root:root, `0600`).
+`/opt/sahabino/runtime/seaweedfs-s3.json`. The directory is
+`root:sahabino-seaweedfs` mode `0710` and the file is mode `0640`; Compose runs
+the pinned image as its built-in non-root `seaweed` account and adds only that
+dedicated secret-reader GID. Other host users receive no read permission.

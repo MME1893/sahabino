@@ -1,11 +1,72 @@
 ---
+- name: Inspect the pinned image's SeaweedFS runtime UID and GID
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint
+      - sh
+      - "{{ sahabino_seaweedfs_image }}"
+      - -c
+      - "id -u {{ sahabino_seaweedfs_runtime_user }}; id -g {{ sahabino_seaweedfs_runtime_user }}"
+  register: sahabino_seaweedfs_image_identity
+  changed_when: false
+
+- name: Require a real non-root identity in the pinned SeaweedFS image
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_image_identity.stdout_lines | length == 2
+      - sahabino_seaweedfs_image_identity.stdout_lines[0] | int > 0
+      - sahabino_seaweedfs_image_identity.stdout_lines[1] | int > 0
+    fail_msg: The pinned SeaweedFS image does not provide the expected non-root runtime identity.
+
+- name: Create the dedicated SeaweedFS secret-reader group
+  ansible.builtin.group:
+    name: "{{ sahabino_seaweedfs_secret_group }}"
+    gid: "{{ sahabino_seaweedfs_secret_gid }}"
+    system: true
+    state: present
+
+- name: Inspect the production runtime directory without following links
+  ansible.builtin.stat:
+    path: "{{ sahabino_runtime_dir }}"
+    follow: false
+  register: sahabino_runtime_dir_stat
+
+- name: Refuse a symlinked or non-directory production runtime path
+  ansible.builtin.assert:
+    that:
+      - not (sahabino_runtime_dir_stat.stat.islnk | default(false))
+      - not (sahabino_runtime_dir_stat.stat.exists | default(false)) or (sahabino_runtime_dir_stat.stat.isdir | default(false))
+      - sahabino_runtime_dir == sahabino_app_parent_dir + '/runtime'
+    fail_msg: The production runtime path must be the real directory below the application parent.
+
 - name: Create the production runtime directory
   ansible.builtin.file:
     path: "{{ sahabino_runtime_dir }}"
     state: directory
     owner: root
-    group: root
-    mode: "0700"
+    group: "{{ sahabino_seaweedfs_secret_group }}"
+    mode: "0710"
+
+- name: Resolve the production runtime directory
+  ansible.builtin.command:
+    argv: [realpath, -e, "{{ sahabino_runtime_dir }}"]
+  register: sahabino_runtime_realpath
+  changed_when: false
+
+- name: Resolve the application parent directory
+  ansible.builtin.command:
+    argv: [realpath, -e, "{{ sahabino_app_parent_dir }}"]
+  register: sahabino_parent_realpath
+  changed_when: false
+
+- name: Require the runtime directory to remain below the application parent
+  ansible.builtin.assert:
+    that:
+      - sahabino_runtime_realpath.stdout == sahabino_parent_realpath.stdout + '/runtime'
+    fail_msg: The resolved runtime directory escapes the intended application parent.
 
 - name: Inspect the SeaweedFS runtime configuration path
   ansible.builtin.stat:
@@ -20,24 +81,32 @@
       - not (sahabino_seaweedfs_config_stat.stat.islnk | default(false))
     fail_msg: The SeaweedFS credential file must be the non-symlink runtime path.
 
+- name: Create a non-predictable SeaweedFS candidate file in the runtime filesystem
+  ansible.builtin.tempfile:
+    state: file
+    path: "{{ sahabino_runtime_dir }}"
+    prefix: .seaweedfs-s3.
+  register: sahabino_seaweedfs_candidate
+  no_log: true
+
 - name: Render candidate SeaweedFS S3 configuration
   ansible.builtin.template:
     src: seaweedfs-s3.json.j2
-    dest: "{{ sahabino_seaweedfs_s3_config_path }}.new"
+    dest: "{{ sahabino_seaweedfs_candidate.path }}"
     owner: root
-    group: root
-    mode: "0600"
+    group: "{{ sahabino_seaweedfs_secret_group }}"
+    mode: "0640"
   no_log: true
 
 - name: Validate candidate SeaweedFS S3 configuration syntax
   ansible.builtin.command:
-    argv: [python3, -m, json.tool, "{{ sahabino_seaweedfs_s3_config_path }}.new"]
+    argv: [python3, -m, json.tool, "{{ sahabino_seaweedfs_candidate.path }}"]
   changed_when: false
   no_log: true
 
 - name: Atomically install SeaweedFS S3 configuration
   ansible.builtin.command:
-    argv: [mv, -f, "{{ sahabino_seaweedfs_s3_config_path }}.new", "{{ sahabino_seaweedfs_s3_config_path }}"]
+    argv: [mv, -f, "{{ sahabino_seaweedfs_candidate.path }}", "{{ sahabino_seaweedfs_s3_config_path }}"]
   changed_when: true
   no_log: true
 
@@ -45,8 +114,25 @@
   ansible.builtin.file:
     path: "{{ sahabino_seaweedfs_s3_config_path }}"
     owner: root
-    group: root
-    mode: "0600"
+    group: "{{ sahabino_seaweedfs_secret_group }}"
+    mode: "0640"
+
+- name: Inspect final SeaweedFS secret metadata
+  ansible.builtin.stat:
+    path: "{{ sahabino_seaweedfs_s3_config_path }}"
+    follow: false
+  register: sahabino_seaweedfs_final_stat
+
+- name: Verify the final SeaweedFS host access contract
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_final_stat.stat.isreg
+      - not sahabino_seaweedfs_final_stat.stat.islnk
+      - sahabino_seaweedfs_final_stat.stat.pw_name == 'root'
+      - sahabino_seaweedfs_final_stat.stat.gr_name == sahabino_seaweedfs_secret_group
+      - sahabino_seaweedfs_final_stat.stat.mode == '0640'
+    fail_msg: The SeaweedFS secret owner, group, type, or permissions are unsafe.
+  no_log: true
 - name: Render the production environment file
   ansible.builtin.template:
     src: production.env.j2
@@ -82,6 +168,8 @@
       - sahabino_merged_compose.services.kafka.ports | default([], true) | length == 0
       - sahabino_merged_compose.services.seaweedfs.ports[0].host_ip == sahabino_object_storage_bind_address
       - sahabino_merged_compose.services.seaweedfs.volumes[1].source == sahabino_seaweedfs_s3_config_path
+      - sahabino_merged_compose.services.seaweedfs.user == sahabino_seaweedfs_runtime_user
+      - (sahabino_seaweedfs_secret_gid | string) in sahabino_merged_compose.services.seaweedfs.group_add
       - sahabino_merged_compose.services.grafana.ports[0].host_ip == "127.0.0.1"
       - sahabino_merged_compose.services.loki.ports[0].host_ip == "127.0.0.1"
       - sahabino_merged_compose.services.alloy.ports[0].host_ip == "127.0.0.1"

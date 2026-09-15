@@ -27,6 +27,39 @@
     state: started
     timeout: 60
 
+- name: Read the effective SeaweedFS runtime identity
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'seaweedfs', 'id', '-un'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_seaweedfs_identity
+  changed_when: false
+
+- name: Require the pinned image's non-root SeaweedFS identity
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_identity.stdout | trim == sahabino_seaweedfs_runtime_user
+      - sahabino_seaweedfs_identity.stdout | trim != 'root'
+    fail_msg: SeaweedFS is not running as the expected non-root runtime identity.
+
+- name: Read the effective numeric SeaweedFS runtime identity
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'seaweedfs', 'sh', '-c', 'id -u; id -g'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_seaweedfs_numeric_identity
+  changed_when: false
+
+- name: Match the running identity to the inspected pinned image account
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_numeric_identity.stdout_lines == sahabino_seaweedfs_image_identity.stdout_lines
+    fail_msg: The running SeaweedFS UID/GID differs from the pinned image runtime account.
+
+- name: Verify credentials are readable by the effective SeaweedFS identity
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'seaweedfs', 'test', '-r', '/etc/seaweedfs/s3.json'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
 - name: Read running Compose services
   ansible.builtin.command:
     argv: "{{ sahabino_compose_cli + ['ps', '--services', '--filter', 'status=running'] }}"
@@ -58,15 +91,18 @@
     chdir: "{{ sahabino_app_dir }}"
   changed_when: false
 
-- name: Query network analyzer consumer group (empty group is valid)
+- name: Verify the analyzer has joined its configured Kafka consumer group
   ansible.builtin.command:
-    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'kafka', 'timeout', '20s', '/opt/kafka/bin/kafka-consumer-groups.sh', '--bootstrap-server', 'kafka:19092', '--describe', '--group', sahabino_network_analyzer_consumer_group_id] }}"
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'kafka', 'timeout', '20s', '/opt/kafka/bin/kafka-consumer-groups.sh', '--bootstrap-server', 'kafka:19092', '--describe', '--members', '--group', sahabino_network_analyzer_consumer_group_id] }}"
     chdir: "{{ sahabino_app_dir }}"
   register: sahabino_network_group
   changed_when: false
-  failed_when:
-    - sahabino_network_group.rc != 0
-    - "'does not exist' not in (sahabino_network_group.stdout + sahabino_network_group.stderr)"
+  retries: "{{ sahabino_healthcheck_retries }}"
+  delay: "{{ sahabino_healthcheck_delay_seconds }}"
+  until:
+    - sahabino_network_group.rc == 0
+    - sahabino_network_analyzer_consumer_group_id in sahabino_network_group.stdout
+    - "'CONSUMER-ID' in sahabino_network_group.stdout"
 
 - name: Record the successful resolved revision outside the repository
   ansible.builtin.copy:

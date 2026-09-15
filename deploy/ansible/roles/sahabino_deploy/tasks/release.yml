@@ -44,16 +44,34 @@
   failed_when: false
   when:
     - sahabino_existing_crawler.stdout | trim | length > 0
+
+- name: Ask before interrupting a crawl that exceeded the drain timeout
+  ansible.builtin.pause:
+    prompt: >-
+      Active crawler work is still running.
+      1) Abort deployment (default/recommended)
+      2) Explicitly interrupt and continue
+      Enter 2 to continue
+  register: sahabino_crawler_interruption_choice
+  when:
+    - sahabino_existing_crawler.stdout | trim | length > 0
+    - sahabino_active_crawls.stdout | trim != '0'
+    - sahabino_deploy_interactive | bool
     - not (sahabino_allow_active_crawl_interruption | bool)
 
-- name: Abort rather than interrupt an active crawl
+- name: Record an explicit interactive crawler interruption decision
+  ansible.builtin.set_fact:
+    sahabino_allow_active_crawl_interruption: true
+  when:
+    - sahabino_crawler_interruption_choice.user_input | default('') == '2'
+
+- name: Abort rather than implicitly interrupt an active crawl
   ansible.builtin.assert:
     that:
-      - sahabino_allow_active_crawl_interruption | bool or sahabino_active_crawls.stdout | default('0') | trim == '0'
+      - (sahabino_allow_active_crawl_interruption | bool) or (sahabino_active_crawls.stdout | trim == '0')
     fail_msg: An active crawl did not drain before the timeout; retry later or explicitly allow interruption.
   when:
     - sahabino_existing_crawler.stdout | trim | length > 0
-    - not (sahabino_allow_active_crawl_interruption | bool)
 
 - name: Perform final persisted crawl-state race check
   ansible.builtin.command:
