@@ -13,7 +13,7 @@ x-sahabino-production-runtime: &sahabino-production-runtime
 # Local SeaweedFS speaks the S3-compatible API. Nothing here configures AWS or
 # remote object storage; us-east-1 is only the Signature V4 compatibility region.
 x-sahabino-object-storage-runtime: &sahabino-object-storage-runtime
-  SAHABINO_OBJECT_STORAGE_ENDPOINT_URL: "${SAHABINO_OBJECT_STORAGE_ENDPOINT_URL:-http://seaweedfs:8333}"
+  SAHABINO_OBJECT_STORAGE_ENDPOINT_URL: "http://seaweedfs:8333"
   SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL: "${SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL:-http://127.0.0.1:8333}"
   SAHABINO_OBJECT_STORAGE_BUCKET: "${SAHABINO_OBJECT_STORAGE_BUCKET:-sahabino-network-captures}"
   SAHABINO_OBJECT_STORAGE_ACCESS_KEY: "${SAHABINO_OBJECT_STORAGE_ACCESS_KEY}"
@@ -86,13 +86,38 @@ services:
 
   seaweedfs:
     restart: unless-stopped
-    # Keep the optional local S3-compatible endpoint private to the VPS.
+    entrypoint: ["/usr/local/bin/sahabino-seaweedfs-entrypoint"]
+    command: !override
+      [
+        "server",
+        "-s3",
+        "-filer",
+        "-dir=/data",
+        "-s3.port=8333",
+        "-master.volumeSizeLimitMB=1024",
+      ]
+    environment:
+      SAHABINO_SEAWEEDFS_CONFIG_INPUT: /run/secrets/seaweedfs-s3.json
+      SAHABINO_SEAWEEDFS_RUNTIME_DIR: /run/sahabino-seaweedfs
+    tmpfs:
+      - /run/sahabino-seaweedfs:mode=0750
+    # Private is the default. Public binding is rendered only after explicit
+    # operator selection and acknowledgement by the deployment tooling.
     ports: !override
       - name: s3
         target: 8333
         published: "8333"
-        host_ip: 127.0.0.1
+        host_ip: "${SAHABINO_OBJECT_STORAGE_BIND_ADDRESS:-127.0.0.1}"
         protocol: tcp
+    volumes: !override
+      - seaweedfs_data:/data
+      - ./infrastructure/network/seaweedfs-entrypoint.sh:/usr/local/bin/sahabino-seaweedfs-entrypoint:ro
+      - type: bind
+        source: "${SAHABINO_SEAWEEDFS_CONFIG_PATH:?production SeaweedFS config path is required}"
+        target: /run/secrets/seaweedfs-s3.json
+        read_only: true
+        bind:
+          create_host_path: false
 
   network-analyzer:
     restart: unless-stopped
@@ -101,6 +126,8 @@ services:
         - *sahabino-production-runtime
         - *sahabino-object-storage-runtime
       SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID: "${SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID:-sahabino-network-analyzer-v1}"
+      SAHABINO_NETWORK_ANALYZER_MAX_POLL_INTERVAL_MS: "${SAHABINO_NETWORK_ANALYZER_MAX_POLL_INTERVAL_MS:-900000}"
+      SAHABINO_NETWORK_MAX_PARSED_RECORDS: "${SAHABINO_NETWORK_MAX_PARSED_RECORDS:-250000}"
       SAHABINO_NETWORK_TSHARK_PATH: "${SAHABINO_NETWORK_TSHARK_PATH:-tshark}"
       SAHABINO_NETWORK_TSHARK_TIMEOUT_SECONDS: "${SAHABINO_NETWORK_TSHARK_TIMEOUT_SECONDS:-120}"
       SAHABINO_NETWORK_PENDING_UPLOAD_EXPIRY_SECONDS: "${SAHABINO_NETWORK_PENDING_UPLOAD_EXPIRY_SECONDS:-3600}"

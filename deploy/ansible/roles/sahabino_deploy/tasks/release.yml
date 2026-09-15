@@ -5,6 +5,95 @@
     chdir: "{{ sahabino_app_dir }}"
   changed_when: true
 
+- name: Ensure the pinned external SeaweedFS image is available
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['pull', '--policy', 'missing', 'seaweedfs'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Start SeaweedFS before interrupting existing application workers
+  community.docker.docker_compose_v2:
+    project_src: "{{ sahabino_app_dir }}"
+    files: "{{ sahabino_compose_files }}"
+    env_files:
+      - .env
+    project_name: "{{ sahabino_compose_project_name }}"
+    profiles: "{{ sahabino_compose_profiles }}"
+    services: "{{ sahabino_network_infrastructure_services }}"
+    state: present
+    wait: true
+    wait_timeout: 120
+
+- name: Initialize or verify the production capture bucket idempotently
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'run', '--rm', '--no-deps', 'api',
+        'uv', 'run', '--no-sync', 'python', '-m', 'sahabino.network', 'storage-init'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_storage_initialization
+  changed_when: "'Capture bucket created' in sahabino_storage_initialization.stdout"
+
+- name: Wait for persisted crawler work to drain before stopping writers
+  ansible.builtin.command:
+    argv: >-
+      {{ [
+        'python3', sahabino_app_dir + '/deploy/ansible/tools/crawler_drain.py',
+        'wait', '--timeout', sahabino_crawler_drain_timeout_seconds | string,
+        '--poll', sahabino_crawler_drain_poll_seconds | string, '--'
+      ] + sahabino_compose_cli }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_crawler_drain
+  changed_when: false
+  failed_when: false
+
+- name: Fail safely when crawler-state verification itself failed
+  ansible.builtin.assert:
+    that:
+      - sahabino_crawler_drain.rc in [0, 3, 4]
+    fail_msg: >-
+      Crawler-state verification failed. Deployment is aborted without offering
+      an interruption override because active work could not be proven safe.
+
+- name: Ask whether to explicitly interrupt work that survived the drain timeout
+  ansible.builtin.pause:
+    prompt: |-
+      Active crawler work is still running.
+      1) Abort deployment (default / recommended)
+      2) Explicitly interrupt active work and continue
+      Enter 1 or 2
+  register: sahabino_crawler_interruption_choice
+  when:
+    - sahabino_crawler_drain.rc == 3
+    - sahabino_crawler_drain_interactive | bool
+    - not (sahabino_allow_active_crawl_interruption | bool)
+
+- name: Record explicit active-crawl interruption authorization
+  ansible.builtin.set_fact:
+    sahabino_crawler_interruption_authorized: >-
+      {{ (sahabino_allow_active_crawl_interruption | bool)
+         or ((sahabino_crawler_interruption_choice.user_input | default('')) == '2') }}
+
+- name: Abort when active crawler work lacks explicit interruption authorization
+  ansible.builtin.assert:
+    that:
+      - sahabino_crawler_drain.rc != 3 or sahabino_crawler_interruption_authorized | bool
+    fail_msg: Active crawler work remained after the drain timeout; deployment is safely aborted.
+
+- name: Perform the final authoritative crawler race-window check
+  ansible.builtin.command:
+    argv: >-
+      {{ [
+        'python3', sahabino_app_dir + '/deploy/ansible/tools/crawler_drain.py', 'final'
+      ]
+      + ((sahabino_crawler_interruption_authorized | bool)
+         | ternary(['--allow-active-interruption'], []))
+      + ['--'] + sahabino_compose_cli }}
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+  when: sahabino_crawler_drain.rc != 4
+
 - name: Stop database-writing application services before migration
   community.docker.docker_compose_v2:
     project_src: "{{ sahabino_app_dir }}"
@@ -99,7 +188,12 @@
   ansible.builtin.assert:
     that:
       - sahabino_alembic_database_head.stdout | trim | length > 0
-      - (sahabino_alembic_database_head.stdout | trim) in sahabino_alembic_code_heads.stdout
+      - sahabino_alembic_code_heads.stdout_lines | reject('equalto', '') | list | length == 1
+      - >-
+        (sahabino_alembic_database_head.stdout | trim)
+        == ((sahabino_alembic_code_heads.stdout_lines
+             | reject('equalto', '') | list | first)
+            | regex_replace('\\s+\\(head\\)$', ''))
     fail_msg: The database Alembic revision does not match the checked-out code head.
 
 - name: Provision and verify the required Kafka topic topology

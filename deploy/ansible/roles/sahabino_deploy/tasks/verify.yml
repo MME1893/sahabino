@@ -20,6 +20,20 @@
     - 3100
     - 12345
 
+- name: Verify the SeaweedFS S3 port is accepting connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8333
+    state: started
+    timeout: 60
+
+- name: Discover expected services from the merged production model
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['config', '--services'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_verify_expected_services_command
+  changed_when: false
+
 - name: Read running Compose services
   ansible.builtin.command:
     argv: "{{ sahabino_compose_cli + ['ps', '--services', '--filter', 'status=running'] }}"
@@ -27,16 +41,122 @@
   register: sahabino_running_services_command
   changed_when: false
 
-- name: Verify all requested production services are running
+- name: Record missing production services
+  ansible.builtin.set_fact:
+    sahabino_verify_expected_services: >-
+      {{ sahabino_verify_expected_services_command.stdout_lines
+         | reject('equalto', '') | unique | list }}
+    sahabino_missing_services: >-
+      {{ (sahabino_verify_expected_services_command.stdout_lines
+          | reject('equalto', '') | unique | list)
+         | difference(sahabino_running_services_command.stdout_lines) }}
+
+- name: Capture bounded status for each missing service
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['ps', '--all', item] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  loop: "{{ sahabino_missing_services }}"
+  register: sahabino_missing_service_status
+  changed_when: false
+  failed_when: false
+
+- name: Capture bounded recent logs for each missing service
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['logs', '--tail', '120', item] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  loop: "{{ sahabino_missing_services }}"
+  register: sahabino_missing_service_logs
+  changed_when: false
+  failed_when: false
+
+- name: Show missing-service diagnostics
+  ansible.builtin.debug:
+    msg:
+      missing_services: "{{ sahabino_missing_services }}"
+      status: "{{ sahabino_missing_service_status.results | default([]) | map(attribute='stdout') | list }}"
+      recent_logs: "{{ sahabino_missing_service_logs.results | default([]) | map(attribute='stdout') | list }}"
+  when: sahabino_missing_services | length > 0
+
+- name: Verify every service in the merged production model is running
   ansible.builtin.assert:
     that:
-      - >-
-        (sahabino_infrastructure_services
-         + sahabino_application_services
-         + sahabino_observability_services)
-        | difference(sahabino_running_services_command.stdout_lines)
-        | length == 0
-    fail_msg: One or more requested Sahabino production services are not running.
+      - sahabino_required_production_services | difference(sahabino_verify_expected_services) | length == 0
+      - sahabino_missing_services | length == 0
+    fail_msg: "Missing/non-running production services: {{ sahabino_missing_services | join(', ') }}"
+
+- name: Inspect the root-protected SeaweedFS host directory and credential
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - "{{ sahabino_seaweedfs_secret_dir }}"
+    - "{{ sahabino_seaweedfs_config_path }}"
+  register: sahabino_seaweedfs_host_paths
+
+- name: Verify the SeaweedFS host secret permission contract
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_host_paths.results[0].stat.isdir
+      - not sahabino_seaweedfs_host_paths.results[0].stat.islnk
+      - sahabino_seaweedfs_host_paths.results[0].stat.pw_name == "root"
+      - sahabino_seaweedfs_host_paths.results[0].stat.gr_name == "root"
+      - sahabino_seaweedfs_host_paths.results[0].stat.mode == "0700"
+      - sahabino_seaweedfs_host_paths.results[1].stat.isreg
+      - not sahabino_seaweedfs_host_paths.results[1].stat.islnk
+      - sahabino_seaweedfs_host_paths.results[1].stat.pw_name == "root"
+      - sahabino_seaweedfs_host_paths.results[1].stat.gr_name == "root"
+      - sahabino_seaweedfs_host_paths.results[1].stat.mode == "0600"
+      - sahabino_seaweedfs_host_paths.results[1].stat.size | int > 0
+    fail_msg: The SeaweedFS host credential permission audit failed.
+
+- name: Verify the staged SeaweedFS credential and non-root PID 1
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'exec', '-T', 'seaweedfs', 'sh', '-eu', '-c',
+        'test "$(awk \'/^Uid:/ {print $2}\' /proc/1/status)" -ne 0
+         && test -f "$1" && test ! -L "$1"
+         && test "$(stat -c %u "$1")" = 0
+         && test "$(stat -c %g "$1")" = "$(id -g seaweed)"
+         && test "$(stat -c %a "$1")" = 640
+         && su-exec seaweed test -r "$1"
+         && ! su-exec seaweed test -w "$1"',
+        'sh', sahabino_seaweedfs_staged_config_path
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Verify the configured capture bucket without creating it
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'exec', '-T', 'api', 'uv', 'run', '--no-sync', 'python', '-c',
+        'from sahabino.common.config import get_settings; from sahabino.network.storage import S3ObjectStorage; storage = S3ObjectStorage(get_settings()); storage._client.head_bucket(Bucket=storage._bucket)'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+  no_log: true
+
+- name: Verify TShark is available in the running analyzer
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['exec', '-T', 'network-analyzer', 'tshark', '--version'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Verify the analyzer reaches Kafka Stable state with at least one member
+  ansible.builtin.command:
+    argv: >-
+      {{ [
+        'python3', sahabino_app_dir + '/deploy/ansible/tools/kafka_group_health.py',
+        '--timeout', '120', '--interval', '5', '--cwd', sahabino_app_dir, '--'
+      ] + sahabino_compose_cli + [
+        'exec', '-T', 'kafka', 'timeout', '20s',
+        '/opt/kafka/bin/kafka-consumer-groups.sh',
+        '--bootstrap-server', 'localhost:19092', '--describe', '--state',
+        '--group', sahabino_network_analyzer_consumer_group_id
+      ] }}
+  changed_when: false
 
 - name: Record the successful resolved revision outside the repository
   ansible.builtin.copy:

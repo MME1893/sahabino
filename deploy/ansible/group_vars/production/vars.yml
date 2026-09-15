@@ -14,6 +14,21 @@ sahabino_compose_files:
   - compose.prod.yml
 sahabino_compose_profiles:
   - observability
+  - network
+sahabino_compose_cli_base:
+  - docker
+  - compose
+  - --project-name
+  - "{{ sahabino_compose_project_name }}"
+  - --env-file
+  - .env
+  - --file
+  - docker-compose.yml
+  - --file
+  - compose.prod.yml
+sahabino_compose_profile_cli: >-
+  {{ ['--profile'] | product(sahabino_compose_profiles) | list | flatten }}
+sahabino_compose_cli: "{{ sahabino_compose_cli_base + sahabino_compose_profile_cli }}"
 
 sahabino_infrastructure_services:
   - postgres
@@ -22,17 +37,29 @@ sahabino_application_services:
   - api
   - ingestion
   - crawler
+  - network-analyzer
+sahabino_network_infrastructure_services:
+  - seaweedfs
 sahabino_observability_services:
   - loki
   - alloy
   - grafana
 sahabino_database_writers: "{{ sahabino_application_services }}"
+sahabino_required_production_services: >-
+  {{ sahabino_infrastructure_services
+     + sahabino_network_infrastructure_services
+     + sahabino_application_services
+     + sahabino_observability_services }}
 
 sahabino_api_bind_address: 0.0.0.0
 sahabino_api_port: 8000
 sahabino_log_level: INFO
 sahabino_healthcheck_retries: 30
 sahabino_healthcheck_delay_seconds: 2
+sahabino_crawler_drain_timeout_seconds: 600
+sahabino_crawler_drain_poll_seconds: 10
+sahabino_allow_active_crawl_interruption: false
+sahabino_crawler_drain_interactive: false
 
 sahabino_backup_dir: /var/backups/sahabino/postgres
 sahabino_backup_retention_days: 14
@@ -47,14 +74,19 @@ sahabino_kafka_topic_replication_factor: 1
 sahabino_kafka_consumer_auto_offset_reset: earliest
 sahabino_ingestion_consumer_group_id: sahabino-ingestion-v1
 sahabino_network_analyzer_consumer_group_id: sahabino-network-analyzer-v1
+sahabino_network_analyzer_max_poll_interval_ms: 900000
+sahabino_network_max_parsed_records: 250000
 sahabino_kafka_producer_queue_full_max_retries: 3
 sahabino_kafka_producer_queue_full_poll_timeout_seconds: 0.1
 
 # Local SeaweedFS on the Sahabino VPS, accessed through its S3-compatible API.
 # No Amazon S3 or other remote object-storage service is configured here.
 sahabino_object_storage_endpoint_url: http://seaweedfs:8333
+sahabino_object_storage_exposure: private
+sahabino_object_storage_bind_address: 127.0.0.1
+sahabino_object_storage_public_acknowledged: false
 # Embedded in presigned URLs. Loopback keeps SeaweedFS private; remote clients
-# can reach it through an SSH tunnel when the optional network profile is used.
+# can reach it through an SSH tunnel in the default private production mode.
 sahabino_object_storage_public_endpoint_url: http://127.0.0.1:8333
 # A logical bucket stored in the local seaweedfs_data Docker named volume.
 sahabino_object_storage_bucket: sahabino-network-captures
@@ -66,6 +98,10 @@ sahabino_network_tshark_path: tshark
 sahabino_network_tshark_timeout_seconds: 120
 sahabino_network_pending_upload_expiry_seconds: 3600
 sahabino_network_stale_analysis_seconds: 1800
+sahabino_runtime_dir: "{{ sahabino_app_parent_dir }}/runtime"
+sahabino_seaweedfs_secret_dir: "{{ sahabino_runtime_dir }}/seaweedfs"
+sahabino_seaweedfs_config_path: "{{ sahabino_seaweedfs_secret_dir }}/seaweedfs-s3.json"
+sahabino_seaweedfs_staged_config_path: /run/sahabino-seaweedfs/seaweedfs-s3.json
 
 sahabino_playstore_crawl_interval_minutes: 60
 sahabino_playstore_max_concurrent_apps: 3

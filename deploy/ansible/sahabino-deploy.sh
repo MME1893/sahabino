@@ -22,7 +22,7 @@ umask 077
 # lose arguments or shell quoting.
 ORIGINAL_ARGS=("$@")
 
-ASSISTANT_VERSION="2026.09.14.3"
+ASSISTANT_VERSION="2026.09.15.1"
 PROGRAM_NAME="$(basename "$0")"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
@@ -48,7 +48,10 @@ RUNTIME_DIR="${SAHABINO_RUNTIME_DIR:-$APP_PARENT/runtime}"
 INVENTORY_FILE="${SAHABINO_INVENTORY_FILE:-$RUNTIME_DIR/production.inventory.yml}"
 
 COMPOSE_PROJECT_NAME="${SAHABINO_COMPOSE_PROJECT_NAME:-sahabino}"
-COMPOSE_PROFILE="${SAHABINO_COMPOSE_PROFILE:-observability}"
+COMPOSE_PROFILES=(observability network)
+if [[ -n "${SAHABINO_COMPOSE_PROFILES:-}" ]]; then
+  IFS=',' read -r -a COMPOSE_PROFILES <<<"$SAHABINO_COMPOSE_PROFILES"
+fi
 API_BIND_ADDRESS="${SAHABINO_API_BIND_ADDRESS:-0.0.0.0}"
 API_PORT="${SAHABINO_API_PORT:-8000}"
 GRAFANA_PORT="${SAHABINO_GRAFANA_PORT:-3000}"
@@ -56,7 +59,13 @@ LOKI_PORT="${SAHABINO_LOKI_PORT:-3100}"
 ALLOY_PORT="${SAHABINO_ALLOY_PORT:-12345}"
 OBJECT_STORAGE_PORT="${SAHABINO_OBJECT_STORAGE_PORT:-8333}"
 INGESTION_CONSUMER_GROUP="${SAHABINO_INGESTION_CONSUMER_GROUP:-sahabino-ingestion-v1}"
+NETWORK_ANALYZER_CONSUMER_GROUP="${SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP:-sahabino-network-analyzer-v1}"
 KAFKA_BOOTSTRAP_INTERNAL="${SAHABINO_KAFKA_BOOTSTRAP_INTERNAL:-kafka:19092}"
+PYTHON3_BIN="${SAHABINO_PYTHON3_BIN:-python3}"
+OBJECT_STORAGE_EXPOSURE="${SAHABINO_OBJECT_STORAGE_EXPOSURE:-}"
+OBJECT_STORAGE_PUBLIC_ENDPOINT="${SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT:-${SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL:-}}"
+OBJECT_STORAGE_BIND_ADDRESS="127.0.0.1"
+SEAWEEDFS_CONFIG_PATH="${SAHABINO_SEAWEEDFS_CONFIG_PATH:-$RUNTIME_DIR/seaweedfs/seaweedfs-s3.json}"
 
 MIN_COMPOSE_VERSION="2.24.4"
 DEFAULT_SWAP_GIB="2"
@@ -76,6 +85,8 @@ NO_REBOOT=0
 SKIP_DOCKER_MIGRATION=0
 ALLOW_UNSUPPORTED_OS="${SAHABINO_ALLOW_UNSUPPORTED_OS:-0}"
 CONFIRM_PUBLIC_API="${SAHABINO_CONFIRM_PUBLIC_API:-0}"
+CONFIRM_PUBLIC_OBJECT_STORAGE="${SAHABINO_CONFIRM_PUBLIC_OBJECT_STORAGE:-0}"
+ALLOW_ACTIVE_CRAWL_INTERRUPTION="${SAHABINO_ALLOW_ACTIVE_CRAWL_INTERRUPTION:-0}"
 REPOSITORY_URL_EXPLICIT=0
 [[ -n "${SAHABINO_REPOSITORY_URL:-}" ]] && REPOSITORY_URL_EXPLICIT=1
 
@@ -149,6 +160,18 @@ Options:
   --yes                      Accept safe/default choices where possible.
   --confirm-public-api       Explicitly acknowledge public API exposure when
                              production bind address is 0.0.0.0/::.
+  --object-storage-exposure MODE
+                             Choose private or public storage exposure.
+                             Private is the safe default, including with --yes.
+  --object-storage-public-endpoint URL
+                             Explicit client-facing http(s) origin for public
+                             storage (no credentials, path, query, or fragment).
+  --confirm-public-object-storage
+                             Acknowledge that public storage has no managed
+                             TLS, reverse proxy, or firewall policy.
+  --allow-active-crawl-interruption
+                             After the normal drain timeout, explicitly permit
+                             interruption of persisted active crawler work.
   --allow-unsupported-os     Compatibility no-op; retained for older invocations.
   --no-reboot                Acknowledge a pending reboot warning. The assistant
                              never reboots the host automatically.
@@ -162,6 +185,10 @@ Environment overrides include:
   SAHABINO_REPOSITORY_URL, SAHABINO_DEPLOY_REVISION,
   SAHABINO_VAULT_PASSWORD, SAHABINO_VAULT_PASSWORD_FILE,
   SAHABINO_CONFIRM_PUBLIC_API, SAHABINO_SOCKS_PROXY,
+  SAHABINO_OBJECT_STORAGE_EXPOSURE, SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT,
+  SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL,
+  SAHABINO_CONFIRM_PUBLIC_OBJECT_STORAGE,
+  SAHABINO_ALLOW_ACTIVE_CRAWL_INTERRUPTION,
   SAHABINO_DEFAULT_SOCKS_PROXY, SAHABINO_PYPI_INDEX_URL,
   SAHABINO_PIP_TIMEOUT, SAHABINO_PIP_RETRIES,
   SAHABINO_VAULT_PASSWORD_STORE.
@@ -186,6 +213,14 @@ while [[ $# -gt 0 ]]; do
       REPOSITORY_URL="$2"; REPOSITORY_URL_EXPLICIT=1; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --confirm-public-api) CONFIRM_PUBLIC_API=1; shift ;;
+    --object-storage-exposure)
+      [[ $# -ge 2 ]] || { error "--object-storage-exposure requires private or public"; exit 2; }
+      OBJECT_STORAGE_EXPOSURE="${2,,}"; shift 2 ;;
+    --object-storage-public-endpoint)
+      [[ $# -ge 2 ]] || { error "--object-storage-public-endpoint requires a URL"; exit 2; }
+      OBJECT_STORAGE_PUBLIC_ENDPOINT="$2"; shift 2 ;;
+    --confirm-public-object-storage) CONFIRM_PUBLIC_OBJECT_STORAGE=1; shift ;;
+    --allow-active-crawl-interruption) ALLOW_ACTIVE_CRAWL_INTERRUPTION=1; shift ;;
     --allow-unsupported-os) ALLOW_UNSUPPORTED_OS=1; shift ;;  # backward-compatible; Ubuntu version no longer hard-blocks
     --no-reboot) NO_REBOOT=1; shift ;;
     --skip-docker-migration) SKIP_DOCKER_MIGRATION=1; shift ;;
@@ -583,6 +618,24 @@ simple_yaml_scalar() {
   ' "$file"
 }
 
+simple_yaml_list() {
+  # Reads one top-level YAML list made of scalar dash items. This keeps the
+  # assistant dependency-free before its managed Ansible venv is available.
+  local file="$1" key="$2"
+  awk -v k="$key" '
+    $0 ~ "^" k ":[[:space:]]*($|#)" { inside=1; next }
+    inside && /^[[:space:]]+-[[:space:]]+/ {
+      value=$0
+      sub(/^[[:space:]]+-[[:space:]]+/, "", value)
+      sub(/[[:space:]]+#.*$/, "", value)
+      gsub(/^['\''\"]|['\''\"]$/, "", value)
+      print value
+      next
+    }
+    inside { exit }
+  ' "$file"
+}
+
 normalize_repository_url() {
   local origin="$1"
   case "$origin" in
@@ -700,6 +753,7 @@ validate_repository_url_policy() {
 
 load_project_config() {
   local vars value
+  local -a configured_profiles=()
   vars=$(project_vars_file_from_path "$APP_DIR")
   [[ -f "$vars" ]] || { warn "Production vars not found at $vars; keeping wrapper defaults."; return 0; }
 
@@ -707,6 +761,13 @@ load_project_config() {
   value=$(simple_yaml_scalar "$vars" sahabino_api_bind_address || true); [[ -n "$value" ]] && API_BIND_ADDRESS="$value"
   value=$(simple_yaml_scalar "$vars" sahabino_api_port || true); [[ -n "$value" ]] && API_PORT="$value"
   value=$(simple_yaml_scalar "$vars" sahabino_ingestion_consumer_group_id || true); [[ -n "$value" ]] && INGESTION_CONSUMER_GROUP="$value"
+  value=$(simple_yaml_scalar "$vars" sahabino_network_analyzer_consumer_group_id || true); [[ -n "$value" ]] && NETWORK_ANALYZER_CONSUMER_GROUP="$value"
+  mapfile -t configured_profiles < <(simple_yaml_list "$vars" sahabino_compose_profiles)
+  if (( ${#configured_profiles[@]} )); then
+    COMPOSE_PROFILES=("${configured_profiles[@]}")
+  fi
+  array_contains observability "${COMPOSE_PROFILES[@]}" || { error "Production Compose profiles must include observability."; return 1; }
+  array_contains network "${COMPOSE_PROFILES[@]}" || { error "Production Compose profiles must include network."; return 1; }
 
   if (( ! REPOSITORY_URL_EXPLICIT )); then
     value=$(simple_yaml_scalar "$vars" sahabino_repository_url || true)
@@ -722,7 +783,35 @@ load_project_config() {
     fi
   fi
 
-  info "Project config: compose=$COMPOSE_PROJECT_NAME api=$API_BIND_ADDRESS:$API_PORT ingestion_group=$INGESTION_CONSUMER_GROUP"
+  info "Project config: compose=$COMPOSE_PROJECT_NAME profiles=${COMPOSE_PROFILES[*]} api=$API_BIND_ADDRESS:$API_PORT ingestion_group=$INGESTION_CONSUMER_GROUP analyzer_group=$NETWORK_ANALYZER_CONSUMER_GROUP"
+}
+
+dotenv_value() {
+  local file="$1" key="$2"
+  awk -v k="$key" '
+    index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }
+  ' "$file"
+}
+
+load_deployed_object_storage_config() {
+  local env_file="$APP_DIR/.env" value
+  [[ -f "$env_file" && ! -L "$env_file" ]] || { error "Production .env must be a regular non-symlink file."; return 1; }
+
+  value=$(dotenv_value "$env_file" SAHABINO_OBJECT_STORAGE_EXPOSURE)
+  [[ "$value" == "private" || "$value" == "public" ]] || { error "Deployed object-storage exposure is missing or invalid."; return 1; }
+  OBJECT_STORAGE_EXPOSURE="$value"
+  OBJECT_STORAGE_BIND_ADDRESS=$(dotenv_value "$env_file" SAHABINO_OBJECT_STORAGE_BIND_ADDRESS)
+  OBJECT_STORAGE_PUBLIC_ENDPOINT=$(dotenv_value "$env_file" SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL)
+  SEAWEEDFS_CONFIG_PATH=$(dotenv_value "$env_file" SAHABINO_SEAWEEDFS_CONFIG_PATH)
+
+  if [[ "$OBJECT_STORAGE_EXPOSURE" == "private" ]]; then
+    [[ "$OBJECT_STORAGE_BIND_ADDRESS" == "127.0.0.1" ]] || { error "Private object storage is not bound to loopback."; return 1; }
+    [[ "$OBJECT_STORAGE_PUBLIC_ENDPOINT" == "http://127.0.0.1:$OBJECT_STORAGE_PORT" ]] || { error "Private presigned endpoint is not the SSH-forward loopback origin."; return 1; }
+  else
+    [[ "$OBJECT_STORAGE_BIND_ADDRESS" == "0.0.0.0" ]] || { error "Public object storage does not have the expected explicit public bind."; return 1; }
+    validate_public_endpoint "$OBJECT_STORAGE_PUBLIC_ENDPOINT" || return 1
+  fi
+  [[ -n "$SEAWEEDFS_CONFIG_PATH" ]] || { error "Deployed SeaweedFS config path is missing."; return 1; }
 }
 
 ubuntu_preflight() {
@@ -800,7 +889,7 @@ ensure_base_packages() {
 
   local -a required_packages=(
     ca-certificates curl gnupg openssl git openssh-client iproute2
-    python3 python3-venv python3-pip
+    python3 python3-venv python3-pip util-linux
   )
   local -a missing_packages=()
   local pkg
@@ -1867,8 +1956,10 @@ run_ansible_syntax_check() {
     cd "$dir"
     ansible_exec "$ANSIBLE_VENV/bin/ansible-playbook" -i "$INVENTORY_FILE" --vault-password-file "$VAULT_PASSWORD_FILE" --syntax-check provision.yml >/dev/null
     ansible_exec "$ANSIBLE_VENV/bin/ansible-playbook" -i "$INVENTORY_FILE" --vault-password-file "$VAULT_PASSWORD_FILE" --syntax-check deploy.yml >/dev/null
+    ansible_exec "$ANSIBLE_VENV/bin/ansible-playbook" -i "$INVENTORY_FILE" --vault-password-file "$VAULT_PASSWORD_FILE" --syntax-check backup.yml >/dev/null
+    ansible_exec "$ANSIBLE_VENV/bin/ansible-playbook" -i "$INVENTORY_FILE" --vault-password-file "$VAULT_PASSWORD_FILE" --syntax-check restore.yml >/dev/null
   )
-  ok "Provision and deploy playbooks pass syntax-check."
+  ok "Provision, deploy, backup, and restore playbooks pass syntax-check."
 }
 
 run_provision() {
@@ -1894,12 +1985,83 @@ confirm_api_exposure() {
   CONFIRM_PUBLIC_API=1
 }
 
+validate_public_endpoint() {
+  "$PYTHON3_BIN" "$SCRIPT_DIR/tools/validate_public_origin.py" "$1"
+}
+
+configure_object_storage_exposure() {
+  step "Object storage exposure"
+  local selection
+
+  if [[ -z "$OBJECT_STORAGE_EXPOSURE" ]]; then
+    if (( ASSUME_YES )); then
+      OBJECT_STORAGE_EXPOSURE="private"
+    else
+      cat <<'EOF_STORAGE_CHOICE'
+Object storage exposure:
+
+  1) Private / SSH tunnel (recommended)
+  2) Public endpoint
+EOF_STORAGE_CHOICE
+      read -r -p "Selection [1]: " selection
+      case "${selection:-1}" in
+        1) OBJECT_STORAGE_EXPOSURE="private" ;;
+        2) OBJECT_STORAGE_EXPOSURE="public" ;;
+        *) error "Object storage exposure selection must be 1 or 2."; return 1 ;;
+      esac
+    fi
+  fi
+
+  case "$OBJECT_STORAGE_EXPOSURE" in
+    private)
+      if [[ -n "$OBJECT_STORAGE_PUBLIC_ENDPOINT" ]]; then
+        error "A public endpoint was supplied while private storage exposure was selected."
+        return 1
+      fi
+      OBJECT_STORAGE_BIND_ADDRESS="127.0.0.1"
+      OBJECT_STORAGE_PUBLIC_ENDPOINT="http://127.0.0.1:$OBJECT_STORAGE_PORT"
+      ok "Object storage will remain private on 127.0.0.1:$OBJECT_STORAGE_PORT."
+      ;;
+    public)
+      while [[ -z "$OBJECT_STORAGE_PUBLIC_ENDPOINT" ]] || ! validate_public_endpoint "$OBJECT_STORAGE_PUBLIC_ENDPOINT"; do
+        if (( ASSUME_YES )); then
+          error "Non-interactive public storage requires a valid --object-storage-public-endpoint."
+          return 1
+        fi
+        read -r -p "External object-storage origin (http[s]://host[:port]): " OBJECT_STORAGE_PUBLIC_ENDPOINT
+      done
+      warn "Public object storage is explicitly selected at: $OBJECT_STORAGE_PUBLIC_ENDPOINT"
+      warn "TLS is NOT managed by this deployment."
+      warn "A reverse proxy is NOT managed by this deployment."
+      warn "Firewall policy is NOT managed by this deployment."
+      if [[ "$CONFIRM_PUBLIC_OBJECT_STORAGE" != "1" ]]; then
+        if (( ASSUME_YES )); then
+          error "Public object storage requires --confirm-public-object-storage in non-interactive mode."
+          return 1
+        fi
+        ask_yes_no "Acknowledge the unmanaged public exposure and continue?" no || {
+          error "Deployment cancelled before public object storage was enabled."
+          return 1
+        }
+        CONFIRM_PUBLIC_OBJECT_STORAGE=1
+      fi
+      OBJECT_STORAGE_BIND_ADDRESS="0.0.0.0"
+      ok "Public object-storage exposure explicitly acknowledged."
+      ;;
+    *)
+      error "Object-storage exposure must be either private or public."
+      return 1
+      ;;
+  esac
+}
+
 run_deploy() {
   local dir deploy_log rc
   dir=$(ansible_dir)
   ensure_vault_password_for_existing
   resolve_revision
   confirm_api_exposure
+  configure_object_storage_exposure
   # resolve_revision has its own stage; reset it here so failures from the
   # playbook are attributed to the actual deployment rather than revision lookup.
   step "Production deployment"
@@ -1910,7 +2072,14 @@ run_deploy() {
     umask "$WORKTREE_UMASK"
     cd "$dir"
     env "ANSIBLE_COLLECTIONS_PATH=$ANSIBLE_COLLECTIONS_DIR" "$ANSIBLE_VENV/bin/ansible-playbook" \
-      -i "$INVENTORY_FILE" deploy.yml --vault-password-file "$VAULT_PASSWORD_FILE" -e "sahabino_deploy_revision=$TARGET_REVISION"
+      -i "$INVENTORY_FILE" deploy.yml --vault-password-file "$VAULT_PASSWORD_FILE" \
+      -e "sahabino_deploy_revision=$TARGET_REVISION" \
+      -e "sahabino_object_storage_exposure=$OBJECT_STORAGE_EXPOSURE" \
+      -e "sahabino_object_storage_bind_address=$OBJECT_STORAGE_BIND_ADDRESS" \
+      -e "sahabino_object_storage_public_endpoint_url=$OBJECT_STORAGE_PUBLIC_ENDPOINT" \
+      -e "sahabino_object_storage_public_acknowledged=$CONFIRM_PUBLIC_OBJECT_STORAGE" \
+      -e "sahabino_crawler_drain_interactive=$((1 - ASSUME_YES))" \
+      -e "sahabino_allow_active_crawl_interruption=$ALLOW_ACTIVE_CRAWL_INTERRUPTION"
   ) 2>&1 | tee -a "$RUN_LOG" "$deploy_log"
   rc=${PIPESTATUS[0]}; set -e
   if (( rc != 0 )); then diagnose_failure "$deploy_log" deploy; return "$rc"; fi
@@ -1920,9 +2089,21 @@ run_deploy() {
 diagnose_failure() {
   local logfile="$1" phase="${2:-deployment}"
   printf '\n%sAutomatic failure diagnosis (%s)%s\n' "$C_BOLD" "$phase" "$C_RESET" >&2
-  if grep -qiE 'One or more requested Sahabino production services are not running|requested production services are not running' "$logfile"; then
+  if grep -qiE 'One or more requested Sahabino production services are not running|requested production services are not running|Missing/non-running production services' "$logfile"; then
     warn "Final Compose service verification failed. Showing the actual missing service(s) and logs."
     show_service_diagnostics || true
+  elif grep -qiE 'Crawler-state verification failed|authoritative crawler-state database query failed' "$logfile"; then
+    warn "The persisted crawler state could not be proven safe. Verify PostgreSQL/crawl_runs access; active work was not interrupted."
+  elif grep -qiE 'Active crawler work remained|Final race-window check found' "$logfile"; then
+    warn "Active crawler work survived the bounded drain window. Retry later or explicitly authorize interruption after reviewing the run."
+  elif grep -qiE 'SeaweedFS credential|seaweedfs-s3|staged-secret|runtime secret' "$logfile"; then
+    warn "SeaweedFS credential staging or host-secret validation failed. Inspect the root-protected runtime path without printing its contents."
+  elif grep -qiE 'Kafka analyzer consumer|Stable.*member|network-analyzer.*Kafka' "$logfile"; then
+    warn "The analyzer consumer group did not reach Kafka Stable state with at least one live member. Inspect analyzer and Kafka logs; offsets are not reset automatically."
+  elif grep -qiE 'storage-init|capture bucket|bucket.*access|S3.*credential' "$logfile"; then
+    warn "SeaweedFS readiness, credential matching, or bucket initialization failed before crawler interruption."
+  elif grep -qiE 'tshark.*(missing|unavailable|not found)' "$logfile"; then
+    warn "TShark is missing or unusable in the network-analyzer image. Rebuild the dedicated analyzer image and inspect its logs."
   elif grep -qiE 'permission denied.*(loki-config|config\.alloy|grafana|seaweedfs)|open .*permission denied' "$logfile"; then
     warn "A container-mounted configuration path is not readable. The assistant now normalizes tracked worktree modes and validates every relative Compose bind source before deployment."
     [[ -d "$APP_DIR/.git" ]] && normalize_checkout_permissions || true
@@ -1951,11 +2132,25 @@ diagnose_failure() {
   fi
 }
 
+compose_command() {
+  local -n output=$1
+  local profile
+  output=(
+    docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file .env
+    --file docker-compose.yml --file compose.prod.yml
+  )
+  for profile in "${COMPOSE_PROFILES[@]}"; do
+    [[ -n "$profile" ]] || { error "Compose profile list contains an empty value."; return 1; }
+    output+=(--profile "$profile")
+  done
+}
+
 compose() {
+  local -a command=()
+  compose_command command
   (
     cd "$APP_DIR"
-    docker compose --project-name "$COMPOSE_PROJECT_NAME" --env-file .env \
-      --file docker-compose.yml --file compose.prod.yml --profile "$COMPOSE_PROFILE" "$@"
+    "${command[@]}" "$@"
   )
 }
 
@@ -1972,9 +2167,22 @@ compose_missing_services() {
 }
 
 show_service_diagnostics() {
+  local expected running missing_output
   local -a missing=()
-  mapfile -t missing < <(compose_missing_services 2>/dev/null || true)
+  expected=$(compose_expected_services) || {
+    error "Could not derive the expected service set from the merged production model."
+    return 1
+  }
+  running=$(compose_running_services) || {
+    error "Could not query running production services."
+    return 1
+  }
+  missing_output=$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$running"))
+  if [[ -n "$missing_output" ]]; then
+    mapfile -t missing <<<"$missing_output"
+  fi
   if (( ${#missing[@]} == 0 )); then
+    ok "Every service in the merged production model is running."
     return 0
   fi
 
@@ -2039,6 +2247,121 @@ require_private_file_mode() {
   fi
 }
 
+wait_for_seaweedfs_health() {
+  local deadline=$((SECONDS + 90))
+  while (( SECONDS < deadline )); do
+    if compose exec -T seaweedfs wget -q --spider http://127.0.0.1:9333/cluster/status >/dev/null 2>&1; then
+      ok "SeaweedFS master/S3 service is ready."
+      return 0
+    fi
+    sleep 3
+  done
+  error "SeaweedFS readiness timed out after 90 seconds."
+  compose ps -a seaweedfs >&2 || true
+  compose logs --tail=160 seaweedfs >&2 || true
+  return 1
+}
+
+verify_network_runtime() {
+  step "Network runtime verification"
+  wait_for_seaweedfs_health || return 1
+
+  compose exec -T seaweedfs sh -eu -c '
+    test "$(awk '\''/^Uid:/ {print $2}'\'' /proc/1/status)" -ne 0
+    test -f "$1"
+    test ! -L "$1"
+    test "$(stat -c %u "$1")" = 0
+    test "$(stat -c %g "$1")" = "$(id -g seaweed)"
+    test "$(stat -c %a "$1")" = 640
+    su-exec seaweed test -r "$1"
+    ! su-exec seaweed test -w "$1"
+  ' sh /run/sahabino-seaweedfs/seaweedfs-s3.json || {
+    error "SeaweedFS PID 1 or staged-secret ownership/readability verification failed."
+    return 1
+  }
+  ok "SeaweedFS PID 1 is non-root and the staged root:seaweed 0640 secret is read-only to seaweed."
+
+  compose exec -T api uv run --no-sync python -c '
+from sahabino.common.config import get_settings
+from sahabino.network.storage import S3ObjectStorage
+storage = S3ObjectStorage(get_settings())
+storage._client.head_bucket(Bucket=storage._bucket)
+' >/dev/null || { error "Read-only production capture-bucket verification failed."; return 1; }
+  ok "Production capture bucket is accessible with the internal SeaweedFS endpoint."
+
+  compose exec -T network-analyzer tshark --version >/dev/null || {
+    error "TShark is unavailable in the running network-analyzer."
+    return 1
+  }
+  ok "TShark is available in the network-analyzer image."
+
+  local -a command=()
+  compose_command command
+  (
+    cd "$APP_DIR"
+    python3 deploy/ansible/tools/kafka_group_health.py \
+      --timeout 120 --interval 5 --cwd "$APP_DIR" -- \
+      "${command[@]}" exec -T kafka timeout 20s \
+      /opt/kafka/bin/kafka-consumer-groups.sh \
+      --bootstrap-server "$KAFKA_BOOTSTRAP_INTERNAL" --describe --state \
+      --group "$NETWORK_ANALYZER_CONSUMER_GROUP"
+  ) || {
+    error "Network analyzer did not establish a Stable Kafka group with at least one member."
+    return 1
+  }
+}
+
+run_as_root() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  elif have sudo && sudo -n true >/dev/null 2>&1; then
+    sudo -n "$@"
+  else
+    return 126
+  fi
+}
+
+audit_unrelated_user_cannot_read() {
+  local file="$1" nobody_uid nobody_gid rc
+  nobody_uid=$(id -u nobody 2>/dev/null) || { error "Cannot resolve the numeric nobody UID for the SeaweedFS secret audit."; return 1; }
+  nobody_gid=$(id -g nobody 2>/dev/null) || { error "Cannot resolve the numeric primary GID for nobody."; return 1; }
+  [[ "$nobody_uid" =~ ^[0-9]+$ && "$nobody_gid" =~ ^[0-9]+$ ]] || { error "The nobody account returned a non-numeric UID/GID."; return 1; }
+
+  run_as_root setpriv --reuid="$nobody_uid" --regid="$nobody_gid" --clear-groups -- true >/dev/null 2>&1 || {
+    error "Could not construct the unrelated-user identity for the SeaweedFS secret audit."
+    return 1
+  }
+  if run_as_root setpriv --reuid="$nobody_uid" --regid="$nobody_gid" --clear-groups -- test -r "$file" >/dev/null 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) error "SeaweedFS host credential is readable by the unrelated nobody account."; return 1 ;;
+    1) return 0 ;;
+    *) error "Unrelated-user SeaweedFS permission test failed to execute (exit $rc)."; return 1 ;;
+  esac
+}
+
+audit_seaweedfs_secret_permissions() {
+  local expected_dir="$RUNTIME_DIR/seaweedfs" expected_file="$RUNTIME_DIR/seaweedfs/seaweedfs-s3.json"
+  local runtime_real dir_real file_real dir_meta file_meta
+  [[ "$SEAWEEDFS_CONFIG_PATH" == "$expected_file" ]] || { error "SeaweedFS secret path is outside its dedicated runtime contract."; return 1; }
+
+  runtime_real=$(run_as_root realpath -e -- "$RUNTIME_DIR" 2>/dev/null) || { error "Cannot resolve the shared runtime directory."; return 1; }
+  dir_real=$(run_as_root realpath -e -- "$expected_dir" 2>/dev/null) || { error "SeaweedFS secret directory is missing or inaccessible."; return 1; }
+  file_real=$(run_as_root realpath -e -- "$expected_file" 2>/dev/null) || { error "SeaweedFS host credential is missing or inaccessible."; return 1; }
+  [[ "$dir_real" == "$runtime_real/seaweedfs" && "$file_real" == "$dir_real/seaweedfs-s3.json" ]] || { error "SeaweedFS secret path escapes the Sahabino runtime tree."; return 1; }
+  [[ ! -L "$expected_dir" && ! -L "$expected_file" ]] || { error "SeaweedFS runtime secret paths must not be symlinks."; return 1; }
+
+  dir_meta=$(run_as_root stat -c '%F|%U|%G|%a' -- "$expected_dir") || return 1
+  file_meta=$(run_as_root stat -c '%F|%U|%G|%a' -- "$expected_file") || return 1
+  [[ "$dir_meta" == "directory|root|root|700" ]] || { error "SeaweedFS secret directory must be root:root mode 0700 (found $dir_meta)."; return 1; }
+  [[ "$file_meta" == "regular file|root|root|600" ]] || { error "SeaweedFS host credential must be root:root mode 0600 (found $file_meta)."; return 1; }
+  audit_unrelated_user_cannot_read "$expected_file" || return 1
+  ok "SeaweedFS host credential is root-protected and unreadable by an unrelated numeric UID/GID."
+}
+
 audit_sensitive_permissions() {
   local failed=0 home key config known_hosts vault
   home=$(deploy_home)
@@ -2053,6 +2376,7 @@ audit_sensitive_permissions() {
   require_private_file_mode "$key" "GitHub Deploy Key private key" || failed=1
   require_private_file_mode "$config" "Deploy-user SSH config" || failed=1
   require_private_file_mode "$INVENTORY_FILE" "Runtime Ansible inventory" || failed=1
+  audit_seaweedfs_secret_permissions || failed=1
 
   if [[ -f "$known_hosts" ]]; then
     local kh_mode
@@ -2077,6 +2401,7 @@ verify_deployment() {
   [[ -d "$APP_DIR" ]] || { error "$APP_DIR does not exist."; return 1; }
   [[ -f "$APP_DIR/.env" ]] || { error "$APP_DIR/.env does not exist."; return 1; }
   [[ -d "$APP_DIR/.git" ]] && load_project_config
+  load_deployed_object_storage_config
 
   # A deployment/check-out may have introduced new tracked paths. Re-apply the
   # index-derived worktree policy before validating containers. In verify-only
@@ -2091,6 +2416,7 @@ verify_deployment() {
   compose ps
   show_service_diagnostics || return 1
   wait_for_kafka_health || { error "Kafka did not become healthy during post-deploy verification."; return 1; }
+  verify_network_runtime || return 1
 
   wait_http_ready "API" "http://127.0.0.1:$API_PORT/docs" 60 2 || {
     compose logs --tail=120 api >&2 || true
@@ -2160,7 +2486,12 @@ Grafana, Loki and Alloy stay loopback-only on the VPS. From your workstation:
     -L $GRAFANA_PORT:127.0.0.1:$GRAFANA_PORT \\
     -L $LOKI_PORT:127.0.0.1:$LOKI_PORT \\
     -L $ALLOY_PORT:127.0.0.1:$ALLOY_PORT \\
-    $DEPLOY_USER@SERVER_IP
+EOF_ACCESS
+  if [[ "$OBJECT_STORAGE_EXPOSURE" == "private" ]]; then
+    printf '    -L %s:127.0.0.1:%s \\\n' "$OBJECT_STORAGE_PORT" "$OBJECT_STORAGE_PORT"
+  fi
+  printf '    %s@SERVER\n' "$DEPLOY_USER"
+  cat <<EOF_ACCESS
 
 Then open:
   Grafana: http://127.0.0.1:$GRAFANA_PORT
@@ -2170,6 +2501,12 @@ Then open:
 API exposure currently configured as: $API_BIND_ADDRESS:$API_PORT
 The assistant does not configure TLS/reverse-proxy/firewall policy.
 EOF_ACCESS
+  if [[ "$OBJECT_STORAGE_EXPOSURE" == "private" ]]; then
+    printf 'SeaweedFS is private; presigned URLs use the SSH-forward origin %s.\n' "$OBJECT_STORAGE_PUBLIC_ENDPOINT"
+  else
+    printf 'SeaweedFS is public at %s; no port %s SSH forward is needed for object storage.\n' \
+      "$OBJECT_STORAGE_PUBLIC_ENDPOINT" "$OBJECT_STORAGE_PORT"
+  fi
 }
 
 main() {

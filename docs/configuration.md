@@ -83,6 +83,8 @@ documented in [crawler/README.md](crawler/README.md).
 
 | Variable | Purpose |
 | --- | --- |
+| `SAHABINO_OBJECT_STORAGE_EXPOSURE` | Production exposure policy: `private` (default) or explicitly acknowledged `public`. |
+| `SAHABINO_OBJECT_STORAGE_BIND_ADDRESS` | Host address for the SeaweedFS S3 port; loopback in private mode. |
 | `SAHABINO_OBJECT_STORAGE_ENDPOINT_URL` | Internal S3-compatible endpoint used by services. |
 | `SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` | Endpoint used when generating client-facing presigned URLs. |
 | `SAHABINO_OBJECT_STORAGE_BUCKET` | Capture bucket name. |
@@ -97,6 +99,18 @@ documented in [crawler/README.md](crawler/README.md).
 | `SAHABINO_NETWORK_ANALYZER_MAX_POLL_INTERVAL_MS` | Kafka poll interval budget for long-running analysis. |
 | `SAHABINO_NETWORK_PENDING_UPLOAD_EXPIRY_SECONDS` | Expiry window for unfinished uploads. |
 | `SAHABINO_NETWORK_STALE_ANALYSIS_SECONDS` | Threshold used to identify stale analysis work. |
+
+Production always uses `http://seaweedfs:8333` for the internal endpoint. The
+public endpoint controls only URLs handed to clients. Private mode binds port
+8333 to loopback and uses `http://127.0.0.1:8333`, normally reached through an
+SSH forward. Public mode requires the operator to supply and acknowledge an
+absolute HTTP(S) origin; it rejects credentials, query strings, fragments,
+non-root paths, local/reserved hostnames, and non-global IP addresses. The
+deployment does not configure TLS, a reverse proxy, DNS, or firewall rules.
+
+Object-storage credentials are rendered from Ansible Vault into the root-owned
+host file `/opt/sahabino/runtime/seaweedfs/seaweedfs-s3.json`; they are not read
+from the development JSON file in the checkout.
 
 See [network/README.md](network/README.md) for the capture lifecycle and analysis
 semantics.
