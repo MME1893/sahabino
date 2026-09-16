@@ -1,14 +1,6 @@
 ---
-sahabino_compose_cli:
-  - docker
-  - compose
-  - --project-name
-  - "{{ sahabino_compose_project_name }}"
-  - --env-file
-  - .env
-  - --file
-  - docker-compose.yml
-  - --file
-  - compose.prod.yml
-  - --profile
-  - observability
+# The production group vars own the Compose files/profile list. These defaults
+# keep the role reusable without reconstructing a divergent command.
+sahabino_compose_profile_cli: >-
+  {{ ['--profile'] | product(sahabino_compose_profiles) | list | flatten }}
+sahabino_compose_cli: "{{ sahabino_compose_cli_base + sahabino_compose_profile_cli }}"

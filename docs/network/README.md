@@ -33,6 +33,23 @@ internal endpoints. `SAHABINO_OBJECT_STORAGE_ENDPOINT_URL` is used by API and
 workers; `SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` is embedded in client
 presigned URLs. Both clients use path-style S3 and Signature V4.
 
+The standard production deployment enables this profile together with
+`observability`; it is still a separate Compose profile and the analyzer remains
+a separately built image. Production credentials come from Ansible Vault and
+are atomically installed as the root-owned mode-`0600` file
+`/opt/sahabino/runtime/seaweedfs/seaweedfs-s3.json`. A root wrapper stages an
+ephemeral tmpfs-backed `root:seaweed` mode-`0640` copy inside the container, validates that
+the `seaweed` account can read but not modify it, and then invokes the pinned
+image's original `/entrypoint.sh`. That preserves its `/data` ownership repair
+and normal privilege drop to UID/GID 1000.
+
+Object storage is private by default: port 8333 binds to loopback and client
+uploads use `http://127.0.0.1:8333`, available remotely through an SSH forward.
+Public mode accepts only an explicitly supplied and acknowledged HTTP(S) origin
+with no credentials, query, fragment, or non-root path and rejects local,
+reserved, and non-global addresses. TLS, DNS, reverse proxy, and firewall
+configuration remain operator-managed.
+
 Run the bounded end-to-end acceptance workflow with:
 
 ```bash
@@ -263,6 +280,11 @@ also configurable with `--max-parsed-records` or
 
 ## Recovery and cleanup
 
+Production deployment runs `storage-init` automatically, after SeaweedFS is
+ready and before crawler drain begins. It is idempotent and ensures the capture
+bucket exists. Verification performs only a read-only bucket check; production
+never runs the synthetic network smoke workflow.
+
 Commands use stable row/event identities:
 
 ```bash
@@ -312,3 +334,9 @@ Intentional v1 limitations are plaintext-oriented analysis, passive/incomplete
 QUIC classification, no QUIC decryption or inferred QUIC loss, best-effort DNS,
 direction degradation for classic PCAP, no storage notifications, no live
 capture, and no aggregate 0–100 network score.
+
+Raw PCAP objects persist in the `seaweedfs_data` named volume. PostgreSQL backup
+and restore protect metadata and analysis rows, but do not include those raw
+objects; raw-object disaster recovery remains outside the current automation.
+Never use `docker compose down -v` as a restart procedure because it deletes
+named-volume data.

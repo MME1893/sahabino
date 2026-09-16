@@ -102,7 +102,7 @@ wait_for "PostgreSQL healthy" "$TIMEOUT_SECONDS" docker compose exec -T postgres
 wait_for "Kafka ready" "$TIMEOUT_SECONDS" docker compose exec -T kafka sh -lc \
   '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 >/dev/null 2>&1'
 wait_for "SeaweedFS ready" "$TIMEOUT_SECONDS" docker compose exec -T seaweedfs \
-  wget -q --spider http://localhost:9333/cluster/status
+  wget -q --spider http://127.0.0.1:9333/cluster/status
 docker compose run --rm --no-deps api uv run --no-sync alembic upgrade head
 docker compose run --rm --no-deps api uv run --no-sync python -m sahabino.messaging.admin
 docker compose --profile network run --rm network-analyzer \

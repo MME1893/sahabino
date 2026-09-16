@@ -1,18 +1,226 @@
 ---
-- name: Render the production environment file
+- name: Inspect an existing production environment file without following links
+  ansible.builtin.stat:
+    path: "{{ sahabino_app_dir }}/.env"
+    follow: false
+    get_checksum: false
+  register: sahabino_existing_environment
+
+- name: Require an existing production environment file to remain safe
+  ansible.builtin.assert:
+    that:
+      - not sahabino_existing_environment.stat.exists or sahabino_existing_environment.stat.isreg
+      - not sahabino_existing_environment.stat.exists or not sahabino_existing_environment.stat.islnk
+      - not sahabino_existing_environment.stat.exists or sahabino_existing_environment.stat.size | int > 0
+      - not sahabino_existing_environment.stat.exists or sahabino_existing_environment.stat.pw_name == sahabino_deploy_user
+      - not sahabino_existing_environment.stat.exists or sahabino_existing_environment.stat.gr_name == sahabino_deploy_group
+      - not sahabino_existing_environment.stat.exists or sahabino_existing_environment.stat.mode == "0600"
+    fail_msg: The existing production .env is missing its regular-file, owner, group, mode 0600, or non-empty safety contract.
+
+- name: Render and atomically validate the production environment file
   ansible.builtin.template:
     src: production.env.j2
     dest: "{{ sahabino_app_dir }}/.env"
     owner: "{{ sahabino_deploy_user }}"
     group: "{{ sahabino_deploy_group }}"
     mode: "0600"
+    validate: >-
+      python3 {{ sahabino_app_dir }}/deploy/ansible/tools/validate_production_env.py %s
   no_log: true
+
+- name: Verify the rendered production environment file contract
+  ansible.builtin.stat:
+    path: "{{ sahabino_app_dir }}/.env"
+    follow: false
+    get_checksum: false
+  register: sahabino_environment
+
+- name: Require a safe rendered production environment file
+  ansible.builtin.assert:
+    that:
+      - sahabino_environment.stat.exists
+      - sahabino_environment.stat.isreg
+      - not sahabino_environment.stat.islnk
+      - sahabino_environment.stat.size | int > 0
+      - sahabino_environment.stat.pw_name == sahabino_deploy_user
+      - sahabino_environment.stat.gr_name == sahabino_deploy_group
+      - sahabino_environment.stat.mode == "0600"
+    fail_msg: The rendered production .env failed its post-install safety audit.
+
+- name: Inspect the shared runtime path without following links
+  ansible.builtin.stat:
+    path: "{{ sahabino_runtime_dir }}"
+    follow: false
+  register: sahabino_runtime_path
+
+- name: Reject an unsafe existing shared runtime path
+  ansible.builtin.assert:
+    that:
+      - not sahabino_runtime_path.stat.exists or sahabino_runtime_path.stat.isdir
+      - not sahabino_runtime_path.stat.exists or not sahabino_runtime_path.stat.islnk
+    fail_msg: The shared Sahabino runtime path must be a non-symlink directory.
+
+- name: Preserve the shared runtime directory contract
+  ansible.builtin.file:
+    path: "{{ sahabino_runtime_dir }}"
+    state: directory
+    owner: "{{ sahabino_deploy_user }}"
+    group: "{{ sahabino_deploy_group }}"
+    mode: "0750"
+
+- name: Resolve the shared runtime directory
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ sahabino_runtime_dir }}"
+  register: sahabino_runtime_realpath
+  changed_when: false
+
+- name: Keep the shared runtime directory below the application parent
+  ansible.builtin.assert:
+    that:
+      - sahabino_runtime_realpath.stdout.startswith(sahabino_app_parent_dir + '/')
+      - sahabino_runtime_realpath.stdout != sahabino_app_dir
+    fail_msg: The shared runtime directory escapes the Sahabino application parent.
+
+- name: Inspect the dedicated SeaweedFS secret directory without following links
+  ansible.builtin.stat:
+    path: "{{ sahabino_seaweedfs_secret_dir }}"
+    follow: false
+  register: sahabino_seaweedfs_secret_directory_before
+
+- name: Reject an unsafe existing SeaweedFS secret directory
+  ansible.builtin.assert:
+    that:
+      - not sahabino_seaweedfs_secret_directory_before.stat.exists or sahabino_seaweedfs_secret_directory_before.stat.isdir
+      - not sahabino_seaweedfs_secret_directory_before.stat.exists or not sahabino_seaweedfs_secret_directory_before.stat.islnk
+    fail_msg: The SeaweedFS secret path must be a non-symlink directory.
+
+- name: Create the dedicated root-protected SeaweedFS secret directory
+  ansible.builtin.file:
+    path: "{{ sahabino_seaweedfs_secret_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Resolve the dedicated SeaweedFS secret directory
+  ansible.builtin.command:
+    argv:
+      - realpath
+      - --canonicalize-existing
+      - "{{ sahabino_seaweedfs_secret_dir }}"
+  register: sahabino_seaweedfs_secret_realpath
+  changed_when: false
+
+- name: Keep the dedicated secret directory inside the shared runtime tree
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_secret_realpath.stdout.startswith(sahabino_runtime_realpath.stdout + '/')
+    fail_msg: The SeaweedFS secret directory escapes the Sahabino runtime tree.
+
+- name: Inspect an existing final SeaweedFS credential without following links
+  ansible.builtin.stat:
+    path: "{{ sahabino_seaweedfs_config_path }}"
+    follow: false
+    get_checksum: false
+  register: sahabino_seaweedfs_existing_config
+
+- name: Reject an unsafe existing final SeaweedFS credential
+  ansible.builtin.assert:
+    that:
+      - not sahabino_seaweedfs_existing_config.stat.exists or sahabino_seaweedfs_existing_config.stat.isreg
+      - not sahabino_seaweedfs_existing_config.stat.exists or not sahabino_seaweedfs_existing_config.stat.islnk
+    fail_msg: The SeaweedFS credential destination must be a non-symlink regular file.
+
+- name: Render, validate, and atomically replace the SeaweedFS credential
+  block:
+    - name: Create an unpredictable same-filesystem SeaweedFS candidate
+      ansible.builtin.tempfile:
+        state: file
+        path: "{{ sahabino_seaweedfs_secret_dir }}"
+        prefix: .seaweedfs-s3.
+        suffix: .json
+      register: sahabino_seaweedfs_candidate
+
+    - name: Render Vault credentials into the protected candidate
+      ansible.builtin.template:
+        src: seaweedfs-s3.json.j2
+        dest: "{{ sahabino_seaweedfs_candidate.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Validate JSON and atomically install the SeaweedFS credential
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sahabino_app_dir }}/deploy/ansible/tools/atomic_seaweedfs_config.py"
+          - --candidate
+          - "{{ sahabino_seaweedfs_candidate.path }}"
+          - --destination
+          - "{{ sahabino_seaweedfs_config_path }}"
+          - --allowed-root
+          - "{{ sahabino_runtime_dir }}"
+          - --uid
+          - "0"
+          - --gid
+          - "0"
+      changed_when: true
+      no_log: true
+  always:
+    - name: Remove any leftover SeaweedFS credential candidate
+      ansible.builtin.file:
+        path: "{{ sahabino_seaweedfs_candidate.path }}"
+        state: absent
+      when:
+        - sahabino_seaweedfs_candidate is defined
+        - sahabino_seaweedfs_candidate.path is defined
+      no_log: true
+
+- name: Inspect the installed SeaweedFS credential contract
+  ansible.builtin.stat:
+    path: "{{ sahabino_seaweedfs_config_path }}"
+    follow: false
+    get_checksum: false
+  register: sahabino_seaweedfs_config
+
+- name: Require the root-protected SeaweedFS host credential contract
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_config.stat.exists
+      - sahabino_seaweedfs_config.stat.isreg
+      - not sahabino_seaweedfs_config.stat.islnk
+      - sahabino_seaweedfs_config.stat.pw_name == "root"
+      - sahabino_seaweedfs_config.stat.gr_name == "root"
+      - sahabino_seaweedfs_config.stat.mode == "0600"
+      - sahabino_seaweedfs_config.stat.size | int > 0
+    fail_msg: The installed SeaweedFS credential failed its owner/group/mode/type audit.
 
 - name: Validate the merged production Compose configuration
   ansible.builtin.command:
     argv: "{{ sahabino_compose_cli + ['config', '--quiet'] }}"
     chdir: "{{ sahabino_app_dir }}"
   changed_when: false
+
+- name: Discover the expected services from the merged production model
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['config', '--services'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_expected_services_command
+  changed_when: false
+
+- name: Record and validate the expected merged production service set
+  ansible.builtin.set_fact:
+    sahabino_expected_services: "{{ sahabino_expected_services_command.stdout_lines | reject('equalto', '') | unique | list }}"
+
+- name: Require the complete old-plus-network production service set
+  ansible.builtin.assert:
+    that:
+      - sahabino_required_production_services | difference(sahabino_expected_services) | length == 0
+    fail_msg: The merged production Compose model is missing a required base, observability, or network service.
 
 - name: Render the merged Compose model for security checks
   ansible.builtin.command:
@@ -38,7 +246,15 @@
       - sahabino_merged_compose.services.api.environment.SAHABINO_ENVIRONMENT == "production"
       - sahabino_merged_compose.services.crawler.environment.SAHABINO_ENVIRONMENT == "production"
       - sahabino_merged_compose.services.ingestion.environment.SAHABINO_ENVIRONMENT == "production"
+      - sahabino_merged_compose.services['network-analyzer'].environment.SAHABINO_ENVIRONMENT == "production"
       - sahabino_merged_compose.services.api.environment.SAHABINO_LOG_FORMAT == "json"
       - sahabino_merged_compose.services.crawler.environment.SAHABINO_LOG_FORMAT == "json"
       - sahabino_merged_compose.services.ingestion.environment.SAHABINO_LOG_FORMAT == "json"
+      - sahabino_merged_compose.services['network-analyzer'].environment.SAHABINO_LOG_FORMAT == "json"
+      - sahabino_merged_compose.services.api.environment.SAHABINO_OBJECT_STORAGE_ENDPOINT_URL == "http://seaweedfs:8333"
+      - sahabino_merged_compose.services['network-analyzer'].environment.SAHABINO_OBJECT_STORAGE_ENDPOINT_URL == "http://seaweedfs:8333"
+      - sahabino_merged_compose.services.api.environment.SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL == sahabino_object_storage_public_endpoint_url
+      - sahabino_merged_compose.services.seaweedfs.ports[0].host_ip == sahabino_object_storage_bind_address
+      - sahabino_merged_compose.services.seaweedfs.entrypoint[0] == "/usr/local/bin/sahabino-seaweedfs-entrypoint"
+      - sahabino_merged_compose.services.seaweedfs.user is not defined
     fail_msg: The merged Compose configuration violates a production exposure or logging invariant.

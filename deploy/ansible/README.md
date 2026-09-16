@@ -89,6 +89,10 @@ Useful options:
 | `--repository-url URL` | Explicit read-only Git URL for standalone first-run bootstrap. |
 | `--yes` / `-y` | Accept safe/default choices where possible. |
 | `--confirm-public-api` | Explicitly acknowledge a public API bind. |
+| `--object-storage-exposure private\|public` | Select SeaweedFS host exposure; defaults to private. |
+| `--object-storage-public-endpoint URL` | Supply the exact external HTTP(S) origin used in presigned URLs. |
+| `--confirm-public-object-storage` | Acknowledge public object-storage exposure. |
+| `--allow-active-crawl-interruption` | After the full drain timeout, explicitly authorize interruption. |
 | `--no-reboot` | Acknowledge a pending reboot warning; does not reboot. |
 | `--skip-docker-migration` | Refuse automatic Snap-Docker migration. |
 | `--socks-proxy HOST:PORT` | Use a SOCKS5 proxy for dependency downloads only. |
@@ -124,6 +128,10 @@ SAHABINO_VAULT_PASSWORD
 SAHABINO_VAULT_PASSWORD_FILE
 SAHABINO_VAULT_PASSWORD_STORE
 SAHABINO_CONFIRM_PUBLIC_API
+SAHABINO_OBJECT_STORAGE_EXPOSURE
+SAHABINO_OBJECT_STORAGE_PUBLIC_ENDPOINT_URL
+SAHABINO_CONFIRM_PUBLIC_OBJECT_STORAGE
+SAHABINO_ALLOW_ACTIVE_CRAWL_INTERRUPTION
 SAHABINO_SOCKS_PROXY
 SAHABINO_DEFAULT_SOCKS_PROXY
 SAHABINO_PYPI_INDEX_URL
@@ -319,6 +327,9 @@ in a short-lived mode-`0600` temporary file, is serialized with PyYAML
 
 The Vault currently contains production values for PostgreSQL, Grafana,
 SeaweedFS-compatible object storage, and optional Play Store proxy URLs.
+SeaweedFS credentials are atomically rendered outside the checkout at
+`/opt/sahabino/runtime/seaweedfs/seaweedfs-s3.json`, owned `root:root` with mode
+`0600`; its parent secret directory is `root:root` mode `0700`.
 
 ## Provisioning and deployment sequence
 
@@ -338,7 +349,7 @@ A full run performs these major stages:
 12. Ansible syntax checks.
 13. Idempotent `provision.yml`.
 14. Revision resolution to a full Git commit SHA.
-15. Explicit public-API acknowledgement when applicable.
+15. Explicit public-API and object-storage exposure acknowledgements when applicable.
 16. `deploy.yml`.
 17. Post-deploy permission, service, readiness, data, lag, and resource checks.
 
@@ -347,15 +358,16 @@ Inside `deploy.yml`, Ansible enforces:
 1. parameter/secret/Docker/Compose/Git preflight;
 2. a verified PostgreSQL custom-format backup before revision/migration changes;
 3. exact revision checkout;
-4. mode-`0600` production `.env` rendering;
-5. merged Compose validation and production exposure/logging assertions;
-6. application image build;
-7. stopping database-writing application services before migration;
-8. PostgreSQL/Kafka startup/readiness;
-9. explicit Alembic migration and code-head/database-head equality;
-10. Kafka topic topology provisioning/verification;
-11. application + observability startup/update;
-12. service/readiness verification and deployed-SHA recording.
+4. atomic mode-`0600` production `.env` and root-protected SeaweedFS credential rendering;
+5. merged Compose validation with both `observability` and `network` profiles;
+6. application image builds, including the separate network-analyzer image;
+7. SeaweedFS startup/readiness and idempotent bucket initialization while the current crawler remains running;
+8. a bounded database-backed crawler drain before any writer interruption;
+9. PostgreSQL/Kafka startup/readiness;
+10. explicit Alembic migration and exact code-head/database-head equality;
+11. Kafka topic topology provisioning/verification;
+12. application, network-analysis, and observability startup/update;
+13. service/readiness verification and deployed-SHA recording.
 
 A failed pre-deploy backup stops the deployment before migrations.
 
@@ -371,6 +383,9 @@ It checks:
 - API `/docs` readiness;
 - Loki `/ready` readiness with retries for its normal temporary 503 warm-up;
 - Grafana `/api/health`;
+- SeaweedFS readiness, non-root PID 1, protected staged credentials, and a read-only bucket HEAD;
+- TShark availability in the analyzer image;
+- a Kafka 4.3 consumer-group state check requiring `Stable` and at least one live analyzer member;
 - PostgreSQL pipeline counts;
 - non-succeeded crawler tasks;
 - ingestion consumer-group lag;
@@ -387,6 +402,48 @@ Run verification at any time with:
 ```bash
 sudo deploy/ansible/sahabino-deploy.sh --verify
 ```
+
+## Production network and object storage
+
+The normal production model enables both `observability` and `network`. Network
+remains a separate Compose profile, and `network-analyzer` remains a separate
+application image; an operator does not run a second deployment to activate it.
+
+Private object storage is the default, including for `--yes`. SeaweedFS port
+8333 binds to `127.0.0.1`, while containers always use the internal
+`http://seaweedfs:8333` endpoint. Public exposure requires all three explicit
+inputs: `--object-storage-exposure public`, a supplied
+`--object-storage-public-endpoint`, and
+`--confirm-public-object-storage`. URL parsing permits only an HTTP(S) origin
+with a valid non-local host and optional valid port; credentials, query strings,
+fragments, non-root paths, reserved names, and non-global IP addresses are
+rejected. No public URL is guessed. TLS, DNS, reverse proxy, and firewall policy
+are not managed here.
+
+The root-readable host secret is never relaxed for the container. The production
+override starts as root through
+`infrastructure/network/seaweedfs-entrypoint.sh`; the wrapper creates an
+ephemeral tmpfs-backed traversable directory, atomically stages a
+`root:seaweed` mode-`0640`
+copy, proves the `seaweed` process can read but not modify it, and invokes the
+pinned image's original `/entrypoint.sh`. The upstream entrypoint retains its
+normal `/data` ownership repair and drops to the image's `seaweed` UID/GID 1000.
+Compose does not force a `user:` override or fixed host GID.
+
+After SeaweedFS is ready, deployment automatically runs the idempotent
+`python -m sahabino.network storage-init` command. Only then does it inspect
+`crawl_runs` for `pending` or `running` work. Active work is polled every 10
+seconds for up to 600 seconds. A SQL/Compose failure aborts immediately. On an
+interactive timeout, abort is the default and interruption requires an explicit
+choice; non-interactive deployment aborts unless
+`--allow-active-crawl-interruption` was supplied. That override never skips the
+normal wait, and a final database check closes the stop race window.
+
+Analyzer health is based on the Kafka 4.3 consumer-group state command executed
+inside the Kafka container. Startup/rebalance states and command failures are
+retried; only `Stable` with at least one member succeeds. Missing committed
+offsets do not by themselves fail a live consumer. Verification creates no
+synthetic captures and does not reset offsets or alter topics.
 
 ## Public API acknowledgement
 
@@ -435,6 +492,11 @@ Validate one archive catalog:
 ```bash
 sudo pg_restore --list /var/backups/sahabino/postgres/NAME.dump >/dev/null
 ```
+
+These PostgreSQL dumps include network metadata and analysis rows, not the raw
+PCAP objects stored in the `seaweedfs_data` named volume. Automated raw-object
+backup/disaster recovery is currently out of scope. Never use Compose `down -v`
+as a recovery or restart command; it destroys named-volume data.
 
 Run the Ansible manual-backup playbook using the persisted Vault password:
 
@@ -488,8 +550,8 @@ Loki     http://127.0.0.1:3100
 Alloy    http://127.0.0.1:12345
 ```
 
-The optional `network` profile also keeps SeaweedFS S3 on loopback port 8333.
-If that profile is enabled and a remote client must follow a presigned URL, add:
+Private production object storage keeps SeaweedFS S3 on loopback port 8333. If
+a remote client must follow a presigned URL, add:
 
 ```text
 -L 8333:127.0.0.1:8333
@@ -535,6 +597,7 @@ docker compose \
   --file docker-compose.yml \
   --file compose.prod.yml \
   --profile observability \
+  --profile network \
   config --quiet
 ```
 

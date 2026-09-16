@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "sahabino-production",
+      "credentials": [
+        {
+          "accessKey": {{ vault_sahabino_object_storage_access_key | to_json }},
+          "secretKey": {{ vault_sahabino_object_storage_secret_key | to_json }}
+        }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}

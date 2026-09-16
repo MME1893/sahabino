@@ -69,7 +69,8 @@ Scheduled Google Play Crawler
                         PostgreSQL
 ```
 
-Network analysis is an optional second pipeline:
+Network analysis is an opt-in profile for local development and is enabled by
+default in production alongside the observability profile:
 
 ```text
 Network Capture API

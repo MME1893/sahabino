@@ -154,8 +154,10 @@ labeled containers and forwards those logs to Loki for inspection in Grafana.
 
 ## Network-analysis profile
 
-Network capture analysis is opt-in. Start the required profile with the flow
-documented in [network/README.md](network/README.md).
+Network capture analysis remains opt-in for local development. Start the
+required profile with the flow documented in
+[network/README.md](network/README.md). Production is different: the standard
+deployment assistant enables both `observability` and `network` automatically.
 
 The profile adds S3-compatible capture storage and the dedicated analyzer worker.
 

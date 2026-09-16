@@ -24,7 +24,7 @@ All production Compose examples use the same model:
 project:  sahabino
 base:     docker-compose.yml
 override: compose.prod.yml
-profile:  observability
+profiles: observability, network
 env:      .env
 ```
 
@@ -38,6 +38,7 @@ scompose() {
     --file docker-compose.yml \
     --file compose.prod.yml \
     --profile observability \
+    --profile network \
     "$@"
 }
 ```
@@ -55,13 +56,16 @@ kafka
 api
 crawler
 ingestion
+seaweedfs
+network-analyzer
 loki
 alloy
 grafana
 ```
 
-`seaweedfs` and `network-analyzer` belong to the optional `network` profile and
-are not part of the default production deployment.
+The network services remain isolated in their own Compose profile/image, but
+the standard production deployment enables that profile automatically together
+with observability.
 
 Show running services:
 
@@ -121,7 +125,7 @@ scompose up -d
 
 > **Never use `scompose down -v` in production unless the explicit goal is data
 > destruction.** `-v` removes named volumes and can destroy PostgreSQL, Kafka,
-> Grafana, Loki, and optional SeaweedFS state.
+> Grafana, Loki, and SeaweedFS state.
 
 For source/configuration releases, migrations, or new images, use the deployment
 assistant instead of manually assembling a release sequence.
@@ -153,9 +157,11 @@ The deployment assistant already contains the canonical verification path:
 sudo /opt/sahabino/app/deploy/ansible/sahabino-deploy.sh --verify
 ```
 
-It validates permissions, running services, Kafka health, API/Loki/Grafana
-readiness, database counts, crawler status, consumer lag, log markers, and
-project container resources.
+It validates permissions, running services, Kafka health, API/Loki/Grafana and
+SeaweedFS readiness, the SeaweedFS process/secret contract, TShark, the live
+analyzer Kafka member, database counts, crawler status, ingestion lag, log
+markers, and project container resources. It is read-only and does not run the
+synthetic network smoke workflow.
 
 ## HTTP/readiness checks
 
@@ -191,6 +197,38 @@ curl -fsS http://127.0.0.1:3100/ready
 curl -fsS http://127.0.0.1:3000/api/health
 printf '\ncore HTTP readiness: OK\n'
 ```
+
+## Network runtime checks
+
+In private mode, SeaweedFS readiness is available only on the VPS loopback:
+
+```bash
+curl -fsS http://127.0.0.1:8333/status
+scompose exec -T network-analyzer tshark --version
+```
+
+Check the analyzer's Kafka 4.3 group state inside the Kafka container:
+
+```bash
+scompose exec -T kafka \
+  /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:19092 \
+  --describe --state \
+  --group sahabino-network-analyzer-v1
+```
+
+Healthy means `Stable` with at least one member. A startup rebalance can be
+temporary, and no committed offsets is valid before the first capture. For
+diagnosis, keep the checks non-mutating:
+
+```bash
+scompose ps -a seaweedfs network-analyzer kafka
+scompose logs --tail=200 seaweedfs network-analyzer kafka
+```
+
+Do not reset consumer offsets, delete topics, or upload a synthetic capture to
+production as a health check. Bucket creation is handled idempotently by the
+deployment before the crawler drain.
 
 ## API smoke queries
 
@@ -413,11 +451,18 @@ If SSH login is only available through a different administrator account, use
 that account for the tunnel; the important property is that the forwarded
 remote endpoints remain `127.0.0.1`.
 
-For the optional SeaweedFS network profile, add:
+For private object storage, add:
 
 ```text
 -L 8333:127.0.0.1:8333
 ```
+
+The presigned URL in private mode uses `http://127.0.0.1:8333`, so the client
+following it must have this forward open. Public mode is selected only during a
+deployment, with an operator-supplied validated endpoint and explicit
+acknowledgement. The automation does not configure TLS, DNS, reverse proxy, or
+firewall rules. Public storage does not change the Grafana, Loki, Alloy, or API
+access hints above.
 
 The provisioned Grafana logging dashboard reads Loki labels extracted by Alloy:
 
@@ -554,6 +599,10 @@ sudo pg_restore --list /var/backups/sahabino/postgres/NAME.dump >/dev/null
 The deployment playbook creates/verifies a pre-deployment backup before
 migrations. Restore is intentionally guarded; use the deployment documentation
 rather than improvising a `pg_restore` into production.
+
+PostgreSQL backups include capture metadata and analysis results, but not raw
+PCAP objects. Those persist in the `seaweedfs_data` named volume, and raw-object
+disaster recovery is not yet automated. Treat `scompose down -v` as destructive.
 
 ## Common interpretations
 

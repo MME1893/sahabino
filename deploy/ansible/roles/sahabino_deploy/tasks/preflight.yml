@@ -8,7 +8,32 @@
       - sahabino_api_port | int not in [80, 443]
       - sahabino_backup_retention_days | int >= 0
       - sahabino_log_level in ["INFO", "WARNING", "ERROR", "CRITICAL"]
+      - "'observability' in sahabino_compose_profiles"
+      - "'network' in sahabino_compose_profiles"
+      - sahabino_object_storage_exposure in ["private", "public"]
+      - sahabino_object_storage_endpoint_url == "http://seaweedfs:8333"
+      - >-
+        (sahabino_object_storage_exposure == "private"
+         and sahabino_object_storage_bind_address == "127.0.0.1"
+         and sahabino_object_storage_public_endpoint_url == "http://127.0.0.1:8333")
+        or
+        (sahabino_object_storage_exposure == "public"
+         and sahabino_object_storage_bind_address == "0.0.0.0"
+         and sahabino_object_storage_public_acknowledged | bool)
+      - sahabino_crawler_drain_timeout_seconds | int > 0
+      - sahabino_crawler_drain_poll_seconds | int > 0
     fail_msg: Supply an explicit revision and review the production group variables.
+
+- name: Validate an explicitly public object-storage origin with Python URL parsing
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - >-
+        {{ lookup('ansible.builtin.file', role_path + '/../../tools/validate_public_origin.py') }}
+      - "{{ sahabino_object_storage_public_endpoint_url }}"
+  changed_when: false
+  when: sahabino_object_storage_exposure == "public"
 
 - name: Require all production secret variables
   ansible.builtin.assert:
