@@ -21,6 +21,7 @@
     profiles: "{{ sahabino_compose_profiles }}"
     services: "{{ sahabino_network_infrastructure_services }}"
     state: present
+    recreate: always
     wait: true
     wait_timeout: 120
 

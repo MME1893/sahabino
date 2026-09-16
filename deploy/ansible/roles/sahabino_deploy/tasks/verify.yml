@@ -84,6 +84,57 @@
       - sahabino_missing_services | length == 0
     fail_msg: "Missing/non-running production services: {{ sahabino_missing_services | join(', ') }}"
 
+- name: Resolve the running SeaweedFS container ID
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['ps', '--quiet', 'seaweedfs'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_seaweedfs_container_id
+  changed_when: false
+
+- name: Require exactly one running SeaweedFS container
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweedfs_container_id.stdout_lines | reject('equalto', '') | list | length == 1
+    fail_msg: Docker Compose did not resolve exactly one running SeaweedFS container for port verification.
+
+- name: Inspect the actual SeaweedFS container publication
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - --type
+      - container
+      - "{{ sahabino_seaweedfs_container_id.stdout | trim }}"
+  register: sahabino_seaweedfs_container_inspect
+  changed_when: false
+  no_log: true
+
+- name: Record the expected and actual SeaweedFS host bindings
+  ansible.builtin.set_fact:
+    sahabino_expected_seaweedfs_host_ip: >-
+      {{ (sahabino_object_storage_exposure == 'private')
+         | ternary('127.0.0.1', sahabino_object_storage_bind_address) }}
+    sahabino_actual_seaweedfs_bindings: >-
+      {{ (sahabino_seaweedfs_container_inspect.stdout | from_json | first).NetworkSettings.Ports['8333/tcp']
+         | default([], true) }}
+
+- name: Verify the actual SeaweedFS host port matches the selected exposure
+  ansible.builtin.assert:
+    that:
+      - sahabino_actual_seaweedfs_bindings | length == 1
+      - sahabino_actual_seaweedfs_bindings | map(attribute='HostPort') | list == ['8333']
+      - >-
+        sahabino_actual_seaweedfs_bindings | map(attribute='HostIp') | list
+        == [sahabino_expected_seaweedfs_host_ip]
+      - >-
+        sahabino_object_storage_exposure != 'public'
+        or sahabino_expected_seaweedfs_host_ip not in ['127.0.0.1', '::1']
+    fail_msg: >-
+      SeaweedFS exposure mismatch: expected {{ sahabino_object_storage_exposure }} binding
+      {{ sahabino_expected_seaweedfs_host_ip }}:8333, but Docker reports
+      {{ sahabino_actual_seaweedfs_bindings | to_nice_json }}. Re-run the production deploy
+      so the SeaweedFS-only reconciliation recreates the container with the selected exposure.
+
 - name: Inspect the root-protected SeaweedFS host directory and credential
   ansible.builtin.stat:
     path: "{{ item }}"
@@ -110,15 +161,24 @@
       - sahabino_seaweedfs_host_paths.results[1].stat.size | int > 0
     fail_msg: The SeaweedFS host credential permission audit failed.
 
-- name: Verify the staged SeaweedFS credential and non-root PID 1
+- name: Verify the staged SeaweedFS credential and exact PID 1 identity
   ansible.builtin.command:
     argv: >-
       {{ sahabino_compose_cli + [
         'exec', '-T', 'seaweedfs', 'sh', '-eu', '-c',
-        'test "$(awk \'/^Uid:/ {print $2}\' /proc/1/status)" -ne 0
-         && test -f "$1" && test ! -L "$1"
+        'seaweed_uid="$(id -u seaweed 2>/dev/null)" || { echo "SeaweedFS seaweed account is missing" >&2; exit 1; };
+         seaweed_gid="$(id -g seaweed 2>/dev/null)" || { echo "SeaweedFS seaweed group is missing" >&2; exit 1; };
+         pid1_uid="$(awk \'/^Uid:/ {print $2}\' /proc/1/status)";
+         pid1_gid="$(awk \'/^Gid:/ {print $2}\' /proc/1/status)";
+         test "$pid1_uid" -ne 0 || { echo "SeaweedFS PID 1 must not run as root" >&2; exit 1; };
+         test "$pid1_uid" = "$seaweed_uid" || { echo "SeaweedFS PID 1 UID does not match the seaweed account" >&2; exit 1; };
+         test "$pid1_gid" = "$seaweed_gid" || { echo "SeaweedFS PID 1 GID does not match the seaweed account" >&2; exit 1; };
+         test -d /data && test "$(stat -c %u /data)" = "$seaweed_uid"
+         && test "$(stat -c %g /data)" = "$seaweed_gid" && su-exec seaweed test -w /data
+         || { echo "SeaweedFS /data ownership or writability is invalid" >&2; exit 1; };
+         test -f "$1" && test ! -L "$1"
          && test "$(stat -c %u "$1")" = 0
-         && test "$(stat -c %g "$1")" = "$(id -g seaweed)"
+         && test "$(stat -c %g "$1")" = "$seaweed_gid"
          && test "$(stat -c %a "$1")" = 640
          && su-exec seaweed test -r "$1"
          && ! su-exec seaweed test -w "$1"',

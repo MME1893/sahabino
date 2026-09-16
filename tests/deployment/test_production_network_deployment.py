@@ -7,6 +7,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 from collections.abc import Sequence
 from types import ModuleType
 
@@ -16,6 +17,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "deploy" / "ansible" / "tools"
 ASSISTANT = ROOT / "deploy" / "ansible" / "sahabino-deploy.sh"
 SEAWEED_WRAPPER = ROOT / "infrastructure" / "network" / "seaweedfs-entrypoint.sh"
+RELEASE_TASKS = ROOT / "deploy" / "ansible" / "roles" / "sahabino_deploy" / "tasks" / "release.yml"
+VERIFY_TASKS = ROOT / "deploy" / "ansible" / "roles" / "sahabino_deploy" / "tasks" / "verify.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _load(name: str) -> ModuleType:
@@ -524,6 +528,115 @@ def test_private_access_hints_include_a_valid_storage_forward() -> None:
     assert "-L 8333:127.0.0.1:8333 \\\n    sahabino@SERVER" in result.stdout
     for marker in ("Grafana:", "Loki:", "Alloy:", "API exposure"):
         assert marker in result.stdout
+
+
+def test_early_seaweed_rollout_always_recreates_only_seaweed_before_drain() -> None:
+    release = RELEASE_TASKS.read_text(encoding="utf-8")
+    start = release.index(
+        "- name: Start SeaweedFS before interrupting existing application workers"
+    )
+    storage_init = release.index(
+        "- name: Initialize or verify the production capture bucket idempotently"
+    )
+    crawler_drain = release.index("- name: Wait for persisted crawler work to drain")
+    early_rollout = release[start:storage_init]
+
+    assert start < storage_init < crawler_drain
+    assert 'services: "{{ sahabino_network_infrastructure_services }}"' in early_rollout
+    assert "recreate: always" in early_rollout
+    assert "state: present" in early_rollout
+    assert "down" not in early_rollout
+
+
+def test_seaweed_verification_uses_dynamic_exact_identity_and_docker_port_data() -> None:
+    verify = VERIFY_TASKS.read_text(encoding="utf-8")
+    assistant = ASSISTANT.read_text(encoding="utf-8")
+    identity_start = verify.index(
+        "- name: Verify the staged SeaweedFS credential and exact PID 1 identity"
+    )
+    identity_end = verify.index("- name: Verify the configured capture bucket without creating it")
+    identity = verify[identity_start:identity_end]
+    assistant_identity_start = assistant.index("verify_network_runtime()")
+    assistant_identity_end = assistant.index(
+        "compose exec -T api uv run --no-sync python -c", assistant_identity_start
+    )
+    assistant_identity = assistant[assistant_identity_start:assistant_identity_end]
+
+    port_verification_start = verify.index("- name: Resolve the running SeaweedFS container ID")
+    port_verification_end = verify.index(
+        "- name: Inspect the root-protected SeaweedFS host directory and credential"
+    )
+    port_verification = verify[port_verification_start:port_verification_end]
+
+    assert "community.docker.docker_container_info" not in verify
+    assert "ansible.builtin.command" in port_verification
+    assert (
+        "\n      - docker\n      - inspect\n      - --type\n      - container\n"
+        in port_verification
+    )
+    assert "from_json" in port_verification
+    assert "NetworkSettings.Ports['8333/tcp']" in port_verification
+    assert "changed_when: false" in port_verification
+    assert "no_log: true" in port_verification
+    assert "sahabino_expected_seaweedfs_host_ip" in verify
+    assert "verify_seaweedfs_port_binding || return 1" in assistant_identity
+    for marker in (
+        "id -u seaweed",
+        "id -g seaweed",
+        "/^Uid:/",
+        "/^Gid:/",
+        'test "$pid1_uid" = "$seaweed_uid"',
+        'test "$pid1_gid" = "$seaweed_gid"',
+    ):
+        assert marker in identity
+        assert marker in assistant_identity
+    assert "1000" not in identity + assistant_identity
+
+
+@pytest.mark.parametrize(
+    ("exposure", "configured_host", "actual_host", "expected_returncode"),
+    [
+        ("private", "127.0.0.1", "127.0.0.1", 0),
+        ("public", "0.0.0.0", "0.0.0.0", 0),
+        ("private", "127.0.0.1", "0.0.0.0", 1),
+        ("public", "0.0.0.0", "127.0.0.1", 1),
+    ],
+)
+def test_assistant_verifies_actual_seaweed_port_binding(
+    tmp_path: pathlib.Path,
+    exposure: str,
+    configured_host: str,
+    actual_host: str,
+    expected_returncode: int,
+) -> None:
+    bindings = json.dumps({"8333/tcp": [{"HostIp": actual_host, "HostPort": "8333"}]})
+    python3 = tmp_path / "python3"
+    python3.write_text(
+        f"#!/bin/sh\nexec '{pathlib.Path(sys.executable).as_posix()}' \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    python3.chmod(0o755)
+    result = _run_bash(
+        f"""
+source '{ASSISTANT.as_posix()}'
+compose() {{ printf 'seaweed-container-id\\n'; }}
+docker() {{ printf '%s\\n' '{bindings}'; }}
+OBJECT_STORAGE_EXPOSURE='{exposure}'
+OBJECT_STORAGE_BIND_ADDRESS='{configured_host}'
+verify_seaweedfs_port_binding
+""",
+        env={"PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+    )
+    assert result.returncode == expected_returncode
+    if expected_returncode:
+        assert "SeaweedFS exposure mismatch" in result.stderr
+
+
+def test_ci_runs_deployment_regressions_and_all_tracked_shell_syntax() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "uv run pytest tests/deployment" in workflow
+    assert "git ls-files -z '*.sh' | xargs -0 -n1 bash -n" in workflow
 
 
 def test_nobody_audit_uses_numeric_uid_and_primary_gid() -> None:

@@ -2262,16 +2262,80 @@ wait_for_seaweedfs_health() {
   return 1
 }
 
+verify_seaweedfs_port_binding() {
+  local -a container_ids=()
+  local bindings_json expected_host_ip port=8333
+  mapfile -t container_ids < <(compose ps --quiet seaweedfs 2>/dev/null | sed '/^$/d')
+  if (( ${#container_ids[@]} != 1 )); then
+    error "Docker Compose did not resolve exactly one running SeaweedFS container for port verification."
+    return 1
+  fi
+
+  bindings_json=$(docker inspect --type container --format '{{json .NetworkSettings.Ports}}' "${container_ids[0]}") || {
+    error "Docker could not inspect the running SeaweedFS container port publication."
+    return 1
+  }
+  if [[ "$OBJECT_STORAGE_EXPOSURE" == "private" ]]; then
+    expected_host_ip="127.0.0.1"
+  else
+    expected_host_ip="$OBJECT_STORAGE_BIND_ADDRESS"
+  fi
+
+  if ! printf '%s' "$bindings_json" | python3 -c '
+import json
+import sys
+
+exposure, expected_host_ip, port = sys.argv[1:]
+try:
+    published = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError) as error:
+    print(f"Docker returned invalid SeaweedFS port data: {error}", file=sys.stderr)
+    raise SystemExit(1)
+bindings = published.get(f"{port}/tcp") or []
+actual = {
+    (str(binding.get("HostIp", "")), str(binding.get("HostPort", "")))
+    for binding in bindings
+    if isinstance(binding, dict)
+}
+expected = {(expected_host_ip, port)}
+if exposure == "public" and expected_host_ip in {"127.0.0.1", "::1"}:
+    print("Public SeaweedFS exposure cannot use a loopback HostIp", file=sys.stderr)
+    raise SystemExit(1)
+if actual != expected:
+    print(
+        f"SeaweedFS exposure mismatch: expected {exposure} binding "
+        f"{expected_host_ip}:{port}; Docker reports {sorted(actual)!r}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+' "$OBJECT_STORAGE_EXPOSURE" "$expected_host_ip" "$port"; then
+    error "Actual SeaweedFS port 8333 publication does not match the selected production exposure. Re-run the production deploy to reconcile SeaweedFS."
+    return 1
+  fi
+  ok "SeaweedFS port publication matches $OBJECT_STORAGE_EXPOSURE exposure at $expected_host_ip:$port."
+}
+
 verify_network_runtime() {
   step "Network runtime verification"
   wait_for_seaweedfs_health || return 1
+  verify_seaweedfs_port_binding || return 1
 
   compose exec -T seaweedfs sh -eu -c '
-    test "$(awk '\''/^Uid:/ {print $2}'\'' /proc/1/status)" -ne 0
+    seaweed_uid=$(id -u seaweed 2>/dev/null) || { echo "SeaweedFS seaweed account is missing" >&2; exit 1; }
+    seaweed_gid=$(id -g seaweed 2>/dev/null) || { echo "SeaweedFS seaweed group is missing" >&2; exit 1; }
+    pid1_uid=$(awk '\''/^Uid:/ {print $2}'\'' /proc/1/status)
+    pid1_gid=$(awk '\''/^Gid:/ {print $2}'\'' /proc/1/status)
+    test "$pid1_uid" -ne 0 || { echo "SeaweedFS PID 1 must not run as root" >&2; exit 1; }
+    test "$pid1_uid" = "$seaweed_uid" || { echo "SeaweedFS PID 1 UID does not match the seaweed account" >&2; exit 1; }
+    test "$pid1_gid" = "$seaweed_gid" || { echo "SeaweedFS PID 1 GID does not match the seaweed account" >&2; exit 1; }
+    test -d /data
+    test "$(stat -c %u /data)" = "$seaweed_uid"
+    test "$(stat -c %g /data)" = "$seaweed_gid"
+    su-exec seaweed test -w /data
     test -f "$1"
     test ! -L "$1"
     test "$(stat -c %u "$1")" = 0
-    test "$(stat -c %g "$1")" = "$(id -g seaweed)"
+    test "$(stat -c %g "$1")" = "$seaweed_gid"
     test "$(stat -c %a "$1")" = 640
     su-exec seaweed test -r "$1"
     ! su-exec seaweed test -w "$1"
@@ -2279,7 +2343,7 @@ verify_network_runtime() {
     error "SeaweedFS PID 1 or staged-secret ownership/readability verification failed."
     return 1
   }
-  ok "SeaweedFS PID 1 is non-root and the staged root:seaweed 0640 secret is read-only to seaweed."
+  ok "SeaweedFS PID 1 matches the dynamic seaweed UID/GID; /data and the staged secret satisfy their runtime contracts."
 
   compose exec -T api uv run --no-sync python -c '
 from sahabino.common.config import get_settings
