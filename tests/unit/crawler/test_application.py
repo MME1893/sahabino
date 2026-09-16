@@ -761,6 +761,8 @@ def test_persisted_task_error_redacts_proxy_credentials(
     app_id = command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
     error = lifecycle.tasks[app_id]["error"]
     assert error is not None
+    assert lifecycle.tasks[app_id]["status"] == CrawlTaskStatus.FAILED
+    assert error[0] == "ACCESS_FORBIDDEN"
     assert password not in repr(error)
     assert "fake-user" not in repr(error)
     assert "proxy.example" not in repr(error)

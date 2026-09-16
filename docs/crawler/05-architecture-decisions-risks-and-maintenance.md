@@ -262,7 +262,7 @@ Important data semantics:
 - app update is a calendar date, not a fabricated datetime;
 - naive source datetimes are rejected instead of interpreted in machine-local time;
 - review timestamps become aware UTC datetimes;
-- review position is bounded 1..100;
+- review position is bounded 1..1000;
 - source adapter provenance is retained.
 
 ### Characterized permissive choices

@@ -22,12 +22,26 @@ class ApplicationRef:
     application_id: UUID
     name: str
     package_name: str
+    language_code: str | None = None
+    country_code: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("application name must not be blank")
         if not self.package_name.strip():
             raise ValueError("package name must not be blank")
+        if (self.language_code is None) != (self.country_code is None):
+            raise ValueError("application locale must contain both language and country")
+        if self.language_code is not None and not self.language_code.strip():
+            raise ValueError("application language code must not be blank")
+        if self.country_code is not None and not self.country_code.strip():
+            raise ValueError("application country code must not be blank")
+
+    def effective_locale(self, language_code: str, country_code: str) -> tuple[str, str]:
+        return (
+            self.language_code or language_code,
+            self.country_code or country_code,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +79,7 @@ class ReviewDTO(BaseModel):
     thumbs_up_count: int = Field(ge=0)
     score: int = Field(ge=1, le=5)
     content: str
-    position: int = Field(ge=1, le=100)
+    position: int = Field(ge=1, le=1000)
     observed_at: datetime = Field(default_factory=utc_now)
     source_adapter: str = Field(min_length=1)
 
@@ -79,4 +93,4 @@ class ReviewDTO(BaseModel):
 class ReviewsDTO(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    reviews: tuple[ReviewDTO, ...] = Field(max_length=100)
+    reviews: tuple[ReviewDTO, ...] = Field(max_length=1000)

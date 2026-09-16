@@ -28,7 +28,7 @@ class ApplicationCrawlCommand:
         publisher: CollectedEventPublisher,
         language_code: str,
         country_code: str,
-        review_limit: int = 100,
+        review_limit: int = 1000,
     ) -> None:
         self._playstore = playstore
         self._lifecycle = lifecycle
@@ -42,11 +42,27 @@ class ApplicationCrawlCommand:
         application: ApplicationRef,
         task_ids: dict[CrawlTaskType, UUID],
     ) -> None:
+        language_code, country_code = application.effective_locale(
+            self._language,
+            self._country,
+        )
         try:
             with self._playstore.open_application(str(application.application_id)) as client:
-                self._run_details(client, application, task_ids[CrawlTaskType.APP_DETAILS])
+                self._run_details(
+                    client,
+                    application,
+                    task_ids[CrawlTaskType.APP_DETAILS],
+                    language_code,
+                    country_code,
+                )
 
-                self._run_reviews(client, application, task_ids[CrawlTaskType.REVIEWS])
+                self._run_reviews(
+                    client,
+                    application,
+                    task_ids[CrawlTaskType.REVIEWS],
+                    language_code,
+                    country_code,
+                )
 
         except CrawlerError as error:
             finalization_errors = self._fail_open_tasks(task_ids, application, error)
@@ -71,12 +87,14 @@ class ApplicationCrawlCommand:
         client: ApplicationPlayStoreClient,
         application: ApplicationRef,
         task_id: UUID,
+        language_code: str,
+        country_code: str,
     ) -> None:
         try:
             details = client.get_app(
                 application.package_name,
-                self._language,
-                self._country,
+                language_code,
+                country_code,
                 hooks=self._hooks(task_id, application, CrawlTaskType.APP_DETAILS),
             )
             self._publisher.publish_app_stats(
@@ -97,12 +115,14 @@ class ApplicationCrawlCommand:
         client: ApplicationPlayStoreClient,
         application: ApplicationRef,
         task_id: UUID,
+        language_code: str,
+        country_code: str,
     ) -> None:
         try:
             reviews = client.get_reviews(
                 application.package_name,
-                self._language,
-                self._country,
+                language_code,
+                country_code,
                 self._review_limit,
                 hooks=self._hooks(task_id, application, CrawlTaskType.REVIEWS),
             )

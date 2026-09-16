@@ -246,6 +246,100 @@ def test_each_application_finishes_details_before_reviews_while_apps_overlap() -
         )
 
 
+def test_shared_command_uses_each_application_locale_without_concurrent_leakage() -> None:
+    applications = [
+        ApplicationRef(uuid4(), "Persian", "com.example.persian", "fa", "ir"),
+        ApplicationRef(uuid4(), "Fallback", "com.example.fallback"),
+    ]
+    both_details_started = Barrier(2)
+    calls_lock = Lock()
+    calls: list[tuple[str, str, str, str, int | None]] = []
+
+    class TaskLifecycle(OrchestrationLifecycle):
+        def begin_attempt(self, _task_id: UUID) -> None:
+            return
+
+        def mark_retrying(self, _task_id: UUID) -> None:
+            return
+
+        def mark_task_succeeded(self, _task_id: UUID) -> None:
+            return
+
+        def mark_task_failed(self, *_: object) -> None:
+            return
+
+    class Client:
+        def get_app(
+            self,
+            package_name: str,
+            language_code: str,
+            country_code: str,
+            *,
+            hooks: Any,
+        ) -> AppDetailsDTO:
+            hooks.before_attempt(1)
+            both_details_started.wait(timeout=2)
+            with calls_lock:
+                calls.append((package_name, "details", language_code, country_code, None))
+            return AppDetailsDTO(
+                min_installs=1,
+                score=4,
+                ratings_count=1,
+                reviews_count=0,
+                store_updated_on=None,
+                version=None,
+                ad_supported=False,
+                collected_at=NOW,
+                source_adapter="fake",
+            )
+
+        def get_reviews(
+            self,
+            package_name: str,
+            language_code: str,
+            country_code: str,
+            limit: int,
+            *,
+            hooks: Any,
+        ) -> ReviewsDTO:
+            hooks.before_attempt(1)
+            with calls_lock:
+                calls.append((package_name, "reviews", language_code, country_code, limit))
+            return ReviewsDTO(reviews=())
+
+    class PlayStore:
+        @contextmanager
+        def open_application(self, _context_id: str) -> Any:
+            yield Client()
+
+    class Publisher:
+        def publish_app_stats(self, **_: object) -> None:
+            return
+
+        def publish_reviews(self, **_: object) -> None:
+            return
+
+    lifecycle = TaskLifecycle()
+    command = ApplicationCrawlCommand(
+        playstore=PlayStore(),  # type: ignore[arg-type]
+        lifecycle=lifecycle,  # type: ignore[arg-type]
+        publisher=Publisher(),  # type: ignore[arg-type]
+        language_code="en",
+        country_code="us",
+    )
+
+    _service(FakeRegistry(applications), lifecycle, command, workers=2).crawl_once(
+        TriggerType.MANUAL
+    )
+
+    assert set(calls) == {
+        ("com.example.persian", "details", "fa", "ir", None),
+        ("com.example.persian", "reviews", "fa", "ir", 1000),
+        ("com.example.fallback", "details", "en", "us", None),
+        ("com.example.fallback", "reviews", "en", "us", 1000),
+    }
+
+
 def test_unexpected_worker_failure_waits_for_active_worker_cleanup_and_fails_run() -> None:
     applications = [
         ApplicationRef(uuid4(), "Failing", "com.example.failing"),
@@ -505,6 +599,8 @@ def test_registry_http_adapter_uses_active_endpoint_and_bounded_retry() -> None:
                         "id": str(application_id),
                         "name": "Example",
                         "package_name": "com.example.app",
+                        "language_code": "fa",
+                        "country_code": "ir",
                         "ignored": "response internals",
                     }
                 ],
@@ -520,7 +616,9 @@ def test_registry_http_adapter_uses_active_endpoint_and_bounded_retry() -> None:
 
     applications = registry.list_active_applications()
 
-    assert applications == [ApplicationRef(application_id, "Example", "com.example.app")]
+    assert applications == [
+        ApplicationRef(application_id, "Example", "com.example.app", "fa", "ir")
+    ]
     assert client.calls == [
         ("/applications", {"params": {"active": "true"}}),
         ("/applications", {"params": {"active": "true"}}),
@@ -570,7 +668,7 @@ def test_kafka_publisher_uses_application_key_and_one_event_per_review() -> None
                 observed_at=NOW,
                 source_adapter="primary",
             )
-            for index in (1, 2)
+            for index in (1, 1000)
         )
     )
 
@@ -590,7 +688,7 @@ def test_kafka_publisher_uses_application_key_and_one_event_per_review() -> None
         and message.key == str(application.application_id)
         for message in producer.batches[1]
     )
-    assert [message.event.payload.position for message in producer.batches[1]] == [1, 2]
+    assert [message.event.payload.position for message in producer.batches[1]] == [1, 1000]
     assert {message.event.payload.crawl_task_id for message in producer.batches[1]} == {
         review_task_id
     }

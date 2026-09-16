@@ -47,6 +47,33 @@ def test_create_rejects_unknown_fields() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
+        {"language_code": "fa"},
+        {"country_code": "ir"},
+        {"language_code": "fa", "country_code": None},
+        {"language_code": None, "country_code": "ir"},
+    ],
+)
+def test_create_requires_complete_locale_pair(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        ApplicationCreate.model_validate({**VALID_CREATE, **payload})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"language_code": "FA", "country_code": "ir"},
+        {"language_code": "fa", "country_code": "IRN"},
+        {"language_code": "", "country_code": "ir"},
+    ],
+)
+def test_create_rejects_invalid_locale_codes(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        ApplicationCreate.model_validate({**VALID_CREATE, **payload})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
         {"category_codes": ["messaging"]},
         {"primary_category_code": "messaging"},
     ],
@@ -80,6 +107,34 @@ def test_update_allows_ordinary_partial_update() -> None:
     update = ApplicationUpdate.model_validate({"name": "Renamed"})
 
     assert update.model_dump(exclude_unset=True) == {"name": "Renamed"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"language_code": "fa"},
+        {"country_code": "ir"},
+        {"language_code": "fa", "country_code": None},
+        {"language_code": None, "country_code": "ir"},
+    ],
+)
+def test_update_requires_complete_locale_pair(payload: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        ApplicationUpdate.model_validate(payload)
+
+
+def test_update_allows_atomic_locale_update_and_clear() -> None:
+    update = ApplicationUpdate.model_validate({"language_code": "fa", "country_code": "ir"})
+    clear = ApplicationUpdate.model_validate({"language_code": None, "country_code": None})
+
+    assert update.model_dump(exclude_unset=True) == {
+        "language_code": "fa",
+        "country_code": "ir",
+    }
+    assert clear.model_dump(exclude_unset=True) == {
+        "language_code": None,
+        "country_code": None,
+    }
 
 
 @pytest.mark.parametrize("field", ["name", "package_name"])

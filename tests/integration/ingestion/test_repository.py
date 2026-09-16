@@ -89,13 +89,14 @@ def _review_payload(
     score: int,
     content: str,
     thumbs_up_count: int = 1,
+    position: int = 1,
 ) -> ReviewObservedV1:
     return ReviewObservedV1(
         crawl_task_id=task.id,
         application_id=application.id,
         package_name=application.package_name,
         observed_at=observed_at,
-        position=1,
+        position=position,
         external_review_id="stable-review-id",
         source_at=observed_at,
         author_name="Reviewer",
@@ -132,13 +133,41 @@ def test_ingestion_schema_and_migration_head(crawler_database_url: str) -> None:
     assert len(schema.get_check_constraints("ingested_events")) == 3
     assert len(schema.get_check_constraints("playstore_app_snapshots")) == 4
     assert len(schema.get_check_constraints("reviews")) == 3
-    assert len(schema.get_check_constraints("review_observations")) == 3
+    review_observation_checks = {
+        constraint["name"]: constraint["sqltext"]
+        for constraint in schema.get_check_constraints("review_observations")
+    }
+    assert len(review_observation_checks) == 3
+    assert "1000" in review_observation_checks["ck_review_observations_position_range"]
 
     with engine.connect() as connection:
         assert connection.scalar(select(func.max(IngestedEvent.schema_version))) is None
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar_one() == ("20260911_0003")
+        ).scalar_one() == ("20260916_0006")
+
+
+def test_review_position_1000_is_ingested_into_postgresql(
+    crawler_database_url: str,
+) -> None:
+    factory = _factory(crawler_database_url)
+    application = _application(factory)
+    task = _task(factory, application.id, "reviews")
+    payload = _review_payload(
+        application,
+        task,
+        observed_at=datetime(2026, 9, 11, 18, tzinfo=UTC),
+        score=5,
+        content="position one thousand",
+        position=1000,
+    )
+
+    with factory.begin() as session:
+        handle_review_observed(review_observed_envelope(payload), IngestionRepository(session))
+
+    with factory() as session:
+        observation = session.scalars(select(ReviewObservation)).one()
+        assert observation.position == 1000
 
 
 def test_app_snapshot_and_event_claim_are_idempotent(crawler_database_url: str) -> None:

@@ -5,7 +5,7 @@
 The Sahabino Google Play crawler is a standalone background subsystem that periodically collects two kinds of information for applications registered in Sahabino:
 
 1. **Application statistics**, such as installs, score, rating count, review count, store update date, current version, and ad-support flag.
-2. **Recent reviews**, currently limited to the newest 100 reviews per application, including review identity, source timestamp, score, content, author, thumbs-up count, and the review's position in the observed list.
+2. **Recent reviews**, currently limited to the newest 1,000 reviews per application, including review identity, source timestamp, score, content, author, thumbs-up count, and the review's position in the observed list.
 
 The crawler does not decide which applications exist. It asks the **Application Registry API** for the active application list at the beginning of each crawl run. It also does not store the collected Google Play data in analytical tables. Instead:
 
@@ -540,11 +540,11 @@ Each `ReviewDTO` requires:
 - timezone-aware source timestamp normalized to UTC;
 - score 1 through 5;
 - non-negative thumbs-up count;
-- position 1 through 100;
+- position 1 through 1,000;
 - timezone-aware observation timestamp;
 - source adapter provenance.
 
-All reviews in one collection result share the same `observed_at`, representing the observation batch. Review count is capped at 100.
+All reviews in one collection result share the same `observed_at`, representing the observation batch. Review count is capped at 1,000.
 
 ## 17. Kafka ownership and delivery semantics
 

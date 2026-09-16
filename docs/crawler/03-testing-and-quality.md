@@ -495,11 +495,12 @@ The following appendix is generated from the supplied source snapshot and is inc
 - `test_primary_review_decoder_exposes_raw_json_errors_for_classifier`
 - `test_primary_review_normalization_rejects_missing_or_naive_timestamp`
 - `test_primary_review_limit_must_be_positive`
-- `test_primary_review_limit_is_capped_at_100`
+- `test_primary_accepts_1000_reviews_and_caps_larger_requests`
 - `test_primary_empty_reviews_are_a_successful_empty_dto`
 - `test_primary_adapter_rejects_unpinned_gplay_version`
 - `test_secondary_rejects_naive_review_timestamp_instead_of_using_local_timezone`
-- `test_secondary_stops_at_100_and_does_not_expose_continuation`
+- `test_secondary_accepts_1000_reviews_and_preserves_positions`
+- `test_secondary_default_fetcher_paginates_1000_newest_reviews`
 - `test_secondary_uses_last_updated_on_when_updated_is_absent`
 - `test_secondary_review_timestamp_normalization_matrix`
 - `test_secondary_rejects_missing_or_naive_review_timestamps`

@@ -226,7 +226,7 @@ def test_primary_review_limit_must_be_positive(limit: int) -> None:
         _primary_adapter().get_reviews("com.example.app", "en", "us", limit)
 
 
-def test_primary_review_limit_is_capped_at_100() -> None:
+def test_primary_accepts_1000_reviews_and_caps_larger_requests() -> None:
     captured_counts: list[int] = []
 
     class CapturingReviewsScraper:
@@ -243,10 +243,12 @@ def test_primary_review_limit_is_capped_at_100() -> None:
     adapter._reviews_scraper_type = CapturingReviewsScraper  # type: ignore[attr-defined]
     adapter._reviews_scraper = CapturingReviewsScraper()  # type: ignore[attr-defined]
 
-    result = adapter.get_reviews("com.example.app", "en", "us", 500)
+    result = adapter.get_reviews("com.example.app", "en", "us", 1000)
+    capped_result = adapter.get_reviews("com.example.app", "en", "us", 1001)
 
-    assert captured_counts == [100]
+    assert captured_counts == [1000, 1000]
     assert result.reviews == ()
+    assert capped_result.reviews == ()
 
 
 def test_primary_empty_reviews_are_a_successful_empty_dto() -> None:
@@ -289,7 +291,7 @@ def test_secondary_rejects_naive_review_timestamp_instead_of_using_local_timezon
         adapter.get_reviews("com.example.app", "en", "us", 100)
 
 
-def test_secondary_stops_at_100_and_does_not_expose_continuation() -> None:
+def test_secondary_accepts_1000_reviews_and_preserves_positions() -> None:
     reviews = [
         {
             "reviewId": f"r-{index}",
@@ -299,16 +301,60 @@ def test_secondary_stops_at_100_and_does_not_expose_continuation() -> None:
             "at": NOW,
             "thumbsUpCount": 0,
         }
-        for index in range(120)
+        for index in range(1000)
     ]
     adapter = GooglePlayScraperAdapter(
         app_fetcher=lambda **_: {}, review_fetcher=lambda **_: reviews, now=lambda: NOW
     )
 
-    normalized = adapter.get_reviews("com.example.app", "en", "us", 120)
+    normalized = adapter.get_reviews("com.example.app", "en", "us", 1000)
 
-    assert len(normalized.reviews) == 100
-    assert normalized.reviews[-1].position == 100
+    assert len(normalized.reviews) == 1000
+    assert normalized.reviews[-1].position == 1000
+
+
+def test_secondary_default_fetcher_paginates_1000_newest_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google_play_scraper.constants.element import ElementSpecs
+    from google_play_scraper.features import reviews as reviews_module
+
+    calls: list[tuple[int, object]] = []
+    next_index = 0
+
+    def fetch_items(
+        _url: str,
+        _app_id: str,
+        _sort: int,
+        count: int,
+        _score: object,
+        _device: object,
+        token: object,
+    ) -> tuple[list[list[object]], str | None]:
+        nonlocal next_index
+        calls.append((count, token))
+        items = [
+            [f"review-{index}", None, None, None, None, [REVIEW_TIMESTAMP]]
+            for index in range(next_index, next_index + count)
+        ]
+        next_index += count
+        return items, "next-page" if next_index < 1000 else None
+
+    monkeypatch.setattr(reviews_module, "MAX_COUNT_EACH_FETCH", 200)
+    monkeypatch.setattr(reviews_module, "_fetch_review_items", fetch_items)
+    monkeypatch.setattr(ElementSpecs, "Review", {"reviewId": FakeSpec(0)})
+
+    reviews = google_play_module._default_review_fetcher(
+        app_id="com.example.app",
+        lang="en",
+        country="us",
+        count=1000,
+    )
+
+    assert [count for count, _ in calls] == [200, 200, 200, 200, 200]
+    assert [review["reviewId"] for review in reviews] == [
+        f"review-{index}" for index in range(1000)
+    ]
 
 
 def test_secondary_uses_last_updated_on_when_updated_is_absent() -> None:
@@ -407,9 +453,9 @@ def test_secondary_caps_requested_review_count_before_fetching() -> None:
         review_fetcher=fetch_reviews,
     )
 
-    adapter.get_reviews("com.example.app", "en", "us", 101)
+    adapter.get_reviews("com.example.app", "en", "us", 1001)
 
-    assert counts == [100]
+    assert counts == [1000]
 
 
 def test_secondary_missing_ad_supported_defaults_to_false() -> None:
