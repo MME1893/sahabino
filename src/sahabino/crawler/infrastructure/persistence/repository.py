@@ -54,14 +54,18 @@ class SqlAlchemyLifecycleTransaction:
     ) -> dict[tuple[UUID, CrawlTaskType], UUID]:
         result: dict[tuple[UUID, CrawlTaskType], UUID] = {}
         for application in applications:
+            task_language_code, task_country_code = application.effective_locale(
+                language_code,
+                country_code,
+            )
             for task_type in CrawlTaskType:
                 task = CrawlTask(
                     crawl_run_id=run_id,
                     application_id=application.application_id,
                     task_type=task_type.value,
                     status=CrawlTaskStatus.PENDING.value,
-                    language_code=language_code,
-                    country_code=country_code,
+                    language_code=task_language_code,
+                    country_code=task_country_code,
                 )
                 self._session.add(task)
                 self._session.flush()

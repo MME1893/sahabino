@@ -9,6 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 from sahabino.app_registry.models import Application, Category
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+LanguageCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z]{2,3}$")]
+CountryCode = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z]{2}$")]
+
+
+def _validate_locale_pair(language_code: str | None, country_code: str | None) -> None:
+    if (language_code is None) != (country_code is None):
+        raise ValueError("language_code and country_code must be provided together")
 
 
 def _validate_category_assignment(category_codes: list[str], primary_category_code: str) -> None:
@@ -23,11 +30,14 @@ class ApplicationCreate(BaseModel):
 
     name: NonEmptyString
     package_name: NonEmptyString
+    language_code: LanguageCode | None = None
+    country_code: CountryCode | None = None
     category_codes: list[NonEmptyString] = Field(min_length=1)
     primary_category_code: NonEmptyString
 
     @model_validator(mode="after")
     def validate_category_assignment(self) -> Self:
+        _validate_locale_pair(self.language_code, self.country_code)
         _validate_category_assignment(
             self.category_codes,
             self.primary_category_code,
@@ -40,6 +50,8 @@ class ApplicationUpdate(BaseModel):
 
     name: NonEmptyString | None = None
     package_name: NonEmptyString | None = None
+    language_code: LanguageCode | None = None
+    country_code: CountryCode | None = None
     category_codes: list[NonEmptyString] | None = Field(default=None, min_length=1)
     primary_category_code: NonEmptyString | None = None
 
@@ -60,6 +72,13 @@ class ApplicationUpdate(BaseModel):
                 self.category_codes,
                 self.primary_category_code,
             )
+
+        locale_fields = {"language_code", "country_code"}
+        supplied_locale_fields = locale_fields & self.model_fields_set
+        if supplied_locale_fields and supplied_locale_fields != locale_fields:
+            raise ValueError("language_code and country_code must be provided together")
+        if supplied_locale_fields:
+            _validate_locale_pair(self.language_code, self.country_code)
         return self
 
 
@@ -84,6 +103,8 @@ class ApplicationRead(BaseModel):
     id: UUID
     name: str
     package_name: str
+    language_code: str | None
+    country_code: str | None
     is_active: bool
     deactivated_at: datetime | None
     created_at: datetime
@@ -101,6 +122,8 @@ class ApplicationRead(BaseModel):
             id=application.id,
             name=application.name,
             package_name=application.package_name,
+            language_code=application.language_code,
+            country_code=application.country_code,
             is_active=application.is_active,
             deactivated_at=application.deactivated_at,
             created_at=application.created_at,

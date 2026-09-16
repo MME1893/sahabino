@@ -88,7 +88,7 @@ class GPlayScraperAdapter:
         limit: int,
     ) -> ReviewsDTO:
         validate_package(package_name)
-        effective_limit = min(limit, 100)
+        effective_limit = min(limit, 1000)
         if effective_limit < 1:
             raise ValueError("review limit must be positive")
         scrape = inspect.unwrap(self._reviews_scraper_type.scrape_reviews_data)

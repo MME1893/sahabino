@@ -25,16 +25,23 @@ from sahabino.db.sync_session import create_sync_engine, create_sync_session_fac
 from .conftest import psycopg_dsn
 
 
-def _application(database_url: str, name: str = "Example") -> ApplicationRef:
+def _application(
+    database_url: str,
+    name: str = "Example",
+    *,
+    language_code: str | None = None,
+    country_code: str | None = None,
+) -> ApplicationRef:
     application_id = uuid4()
     package_name = f"com.example.{application_id.hex}"
     with psycopg.connect(psycopg_dsn(database_url), autocommit=True) as connection:
         connection.execute(
-            "INSERT INTO applications (id, name, package_name, is_active) "
-            "VALUES (%s, %s, %s, true)",
-            (application_id, name, package_name),
+            "INSERT INTO applications "
+            "(id, name, package_name, language_code, country_code, is_active) "
+            "VALUES (%s, %s, %s, %s, %s, true)",
+            (application_id, name, package_name, language_code, country_code),
         )
-    return ApplicationRef(application_id, name, package_name)
+    return ApplicationRef(application_id, name, package_name, language_code, country_code)
 
 
 def test_alembic_created_lifecycle_tables_constraints_indexes_and_foreign_keys(
@@ -99,6 +106,37 @@ def test_task_lifecycle_independent_results_and_partial_run_status(
         assert by_type[CrawlTaskType.APP_DETAILS.value].status == CrawlTaskStatus.SUCCEEDED
         assert by_type[CrawlTaskType.REVIEWS.value].status == CrawlTaskStatus.FAILED
         assert by_type[CrawlTaskType.REVIEWS.value].attempt_count == 2
+
+
+def test_task_creation_persists_per_application_locale_and_global_fallback(
+    crawler_database_url: str,
+) -> None:
+    localized = _application(
+        crawler_database_url,
+        "Localized",
+        language_code="fa",
+        country_code="ir",
+    )
+    fallback = _application(crawler_database_url, "Fallback")
+    session_factory = create_sync_session_factory(crawler_database_url)
+    repository = SqlAlchemyLifecycleRepository(session_factory)
+
+    with repository.transaction() as transaction:
+        run_id = transaction.create_run(TriggerType.MANUAL)
+        transaction.create_tasks(run_id, [localized, fallback], "en", "us")
+        transaction.commit()
+
+    with session_factory() as session:
+        rows = session.execute(
+            select(
+                CrawlTask.application_id,
+                CrawlTask.language_code,
+                CrawlTask.country_code,
+            ).where(CrawlTask.crawl_run_id == run_id)
+        ).all()
+
+    assert rows.count((localized.application_id, "fa", "ir")) == 2
+    assert rows.count((fallback.application_id, "en", "us")) == 2
 
 
 def test_zero_tasks_finishes_succeeded_and_always_sets_finished_at(

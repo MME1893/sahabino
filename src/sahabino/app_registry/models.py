@@ -34,6 +34,11 @@ class Application(Base):
             "(is_active IS FALSE AND deactivated_at IS NOT NULL)",
             name="active_deactivation",
         ),
+        CheckConstraint(
+            "(language_code IS NULL AND country_code IS NULL) OR "
+            "(language_code IS NOT NULL AND country_code IS NOT NULL)",
+            name="locale_pair",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -43,6 +48,8 @@ class Application(Base):
     )
     name: Mapped[str] = mapped_column(Text)
     package_name: Mapped[str] = mapped_column(Text)
+    language_code: Mapped[str | None] = mapped_column(Text, default=None)
+    country_code: Mapped[str | None] = mapped_column(Text, default=None)
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,

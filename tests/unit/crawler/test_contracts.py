@@ -10,7 +10,7 @@ from pydantic import SecretStr, ValidationError
 from sahabino.common.config import Settings
 from sahabino.crawler.application.policies.adapter import AdapterFallbackPolicy
 from sahabino.crawler.application.policies.retry import RetryPolicy
-from sahabino.crawler.domain.dto import AppDetailsDTO, ReviewDTO
+from sahabino.crawler.domain.dto import AppDetailsDTO, ReviewDTO, ReviewsDTO
 from sahabino.crawler.domain.errors import (
     AccessForbidden,
     AdapterFailure,
@@ -43,6 +43,7 @@ from sahabino.crawler.infrastructure.http_errors import (
 from sahabino.messaging.playstore_events import (
     APP_STATS_EVENT_TYPE,
     AppStatsCollectedV1,
+    ReviewObservedV1,
     app_stats_envelope,
 )
 
@@ -83,6 +84,54 @@ def test_review_contract_rejects_naive_source_timestamp() -> None:
             observed_at=NOW,
             source_adapter="primary",
         )
+
+
+def _review(position: int) -> ReviewDTO:
+    return ReviewDTO(
+        external_review_id=f"review-{position}",
+        source_at=NOW,
+        author_name="Author",
+        thumbs_up_count=0,
+        score=5,
+        content="Good",
+        position=position,
+        observed_at=NOW,
+        source_adapter="primary",
+    )
+
+
+def test_review_position_1000_is_accepted_and_1001_is_rejected() -> None:
+    assert _review(1000).position == 1000
+
+    with pytest.raises(ValidationError):
+        _review(1001)
+
+    event = ReviewObservedV1(
+        crawl_task_id=uuid4(),
+        application_id=uuid4(),
+        package_name="com.example.app",
+        **_review(1000).model_dump(),
+    )
+    assert event.position == 1000
+
+    with pytest.raises(ValidationError):
+        ReviewObservedV1(
+            crawl_task_id=uuid4(),
+            application_id=uuid4(),
+            package_name="com.example.app",
+            **{
+                **_review(1000).model_dump(),
+                "position": 1001,
+            },
+        )
+
+
+def test_reviews_collection_accepts_1000_and_rejects_1001_items() -> None:
+    review = _review(1)
+
+    assert len(ReviewsDTO(reviews=(review,) * 1000).reviews) == 1000
+    with pytest.raises(ValidationError):
+        ReviewsDTO(reviews=(review,) * 1001)
 
 
 def test_app_event_uses_date_precision_and_expected_envelope() -> None:

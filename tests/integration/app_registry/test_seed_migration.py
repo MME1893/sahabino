@@ -28,6 +28,24 @@ EXPECTED_APPLICATIONS = {
     "com.facebook.katana": "social_network",
     "com.zhiliaoapp.musically": "social_network",
 }
+EXPECTED_LOCALES = {
+    "org.telegram.messenger": ("en", "us"),
+    "com.whatsapp": ("en", "us"),
+    "com.instagram.android": ("en", "us"),
+    "com.facebook.katana": ("en", "us"),
+    "com.zhiliaoapp.musically": ("en", "us"),
+    "com.myirancell": ("fa", "ir"),
+    "ir.mci.ecareapp": ("fa", "ir"),
+    "ir.rightel.myrightel": ("fa", "ir"),
+    "com.shatelland.namava.mobile": ("fa", "ir"),
+    "com.likotv": ("fa", "ir"),
+    "ir.tamashakhonehtv": ("fa", "ir"),
+    "com.plus9.fandogh": ("fa", "ir"),
+    "com.BrainLadder.AmirzaGP": ("fa", "ir"),
+    "com.plus9.samavar": ("fa", "ir"),
+    "ir.android.baham": ("fa", "ir"),
+    "app.pinno": ("fa", "ir"),
+}
 UNRELATED_APPLICATION_ID = UUID("898f535f-8d68-4f67-9f3a-918e125f97d3")
 
 
@@ -41,11 +59,12 @@ def _config(database_url: str) -> Config:
 
 def _seeded_applications(
     connection: psycopg.Connection[Any],
-) -> list[tuple[str, bool, str, bool]]:
+) -> list[tuple[str, bool, str, bool, str, str]]:
     return connection.execute(
         """
         SELECT applications.package_name, applications.is_active, categories.code,
-               application_categories.is_primary
+               application_categories.is_primary, applications.language_code,
+               applications.country_code
         FROM applications
         JOIN application_categories
           ON application_categories.application_id = applications.id
@@ -83,10 +102,15 @@ def test_clean_upgrade_seeds_required_applications(
     seeded = _seeded_applications(db_connection)
 
     assert len(seeded) == 16
-    assert all(is_active and is_primary for _, is_active, _, is_primary in seeded)
-    assert {package_name: category_code for package_name, _, category_code, _ in seeded} == (
-        EXPECTED_APPLICATIONS
-    )
+    assert all(is_active and is_primary for _, is_active, _, is_primary, _, _ in seeded)
+    assert {
+        package_name: category_code for package_name, _, category_code, _, _, _ in seeded
+    } == EXPECTED_APPLICATIONS
+    assert {
+        package_name: (language_code, country_code)
+        for package_name, _, _, _, language_code, country_code in seeded
+    } == EXPECTED_LOCALES
+    assert next(row for row in seeded if row[0] == "ir.rightel.myrightel")[1] is True
 
     package_counts = db_connection.execute(
         """
@@ -125,7 +149,11 @@ def test_fresh_upgrade_seeds_required_applications(
 
     seeded = _seeded_applications(db_connection)
     assert len(seeded) == len(EXPECTED_APPLICATIONS)
-    assert all(is_active and is_primary for _, is_active, _, is_primary in seeded)
-    assert {package_name: category_code for package_name, _, category_code, _ in seeded} == (
-        EXPECTED_APPLICATIONS
-    )
+    assert all(is_active and is_primary for _, is_active, _, is_primary, _, _ in seeded)
+    assert {
+        package_name: category_code for package_name, _, category_code, _, _, _ in seeded
+    } == EXPECTED_APPLICATIONS
+    assert {
+        package_name: (language_code, country_code)
+        for package_name, _, _, _, language_code, country_code in seeded
+    } == EXPECTED_LOCALES

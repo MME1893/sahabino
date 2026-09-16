@@ -47,7 +47,7 @@ class ReviewObservedV1(BaseModel):
     application_id: UUID
     package_name: str = Field(min_length=1)
     observed_at: datetime
-    position: int = Field(ge=1, le=100)
+    position: int = Field(ge=1, le=1000)
     external_review_id: str = Field(min_length=1)
     source_at: datetime
     author_name: str

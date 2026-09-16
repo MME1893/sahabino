@@ -158,8 +158,10 @@ Immutable dataclass carrying:
 - `application_id: UUID`
 - `name: str`
 - `package_name: str`
+- `language_code: str | None`
+- `country_code: str | None`
 
-Name and package must not be blank. This is the application shape the crawler needs from the Registry; it is intentionally smaller than the full Registry model.
+Name and package must not be blank. Locale values must either both be present or both be absent; absent values use the crawler's global locale fallback. This is the application shape the crawler needs from the Registry; it is intentionally smaller than the full Registry model.
 
 #### `AdapterCapabilities`
 
@@ -187,13 +189,13 @@ Pydantic model, frozen, rejects extra fields. Key validation:
 
 - source and observation timestamps must be timezone-aware and are normalized to UTC;
 - score is 1..5;
-- position is 1..100;
+- position is 1..1000;
 - thumbs-up count is non-negative;
 - external ID and source adapter are non-empty.
 
 #### `ReviewsDTO`
 
-Contains a tuple of reviews with maximum length 100.
+Contains a tuple of reviews with maximum length 1,000.
 
 ### 5.2 `domain/errors.py`
 
@@ -609,7 +611,7 @@ The default implementation uses private library APIs:
 - `google_play_scraper.features.reviews._fetch_review_items`
 - `ElementSpecs.Review`
 
-It requests `Sort.NEWEST`, caps at 100, discards continuation state, and normalizes timestamps/fields into `ReviewDTO`.
+It requests `Sort.NEWEST`, follows continuation tokens until it has at most 1,000 reviews or the source is exhausted, and normalizes timestamps/fields into `ReviewDTO`.
 
 The secondary has no adapter-owned persistent session to close, so `close()` is a no-op.
 
@@ -832,7 +834,7 @@ Proxy-attributed access/timeout/temporary connection failures are not global cir
 - bounded backoff `1`, `2`, up to 4 seconds for additional attempts;
 - treat >=500 and other non-200 statuses as Registry failures;
 - require a list response;
-- normalize each item to `ApplicationRef` and validate UUID/name/package.
+- normalize each item to `ApplicationRef` and validate UUID/name/package/locale pairing.
 
 This retry is intentionally local to the Registry adapter; it is separate from Google Play `RetryPolicy`.
 
@@ -847,6 +849,8 @@ The module imports `sahabino.app_registry.models` so the `applications` table is
 ### 18.2 `infrastructure/persistence/repository.py`
 
 `SqlAlchemyLifecycleRepository.transaction()` is a context manager yielding a transaction facade. It rolls back automatically on exceptions; individual caller methods explicitly call `commit()` at desired lifecycle boundaries.
+
+Task creation stores each application's locale when configured, otherwise the global language/country fallback, so persisted task metadata matches both Play Store requests for that application.
 
 `SqlAlchemyLifecycleTransaction` validates legal state transitions before mutation.
 

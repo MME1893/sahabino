@@ -38,6 +38,8 @@ def test_create_application_persists_one_primary_category(
     payload = {
         "name": "Telegram",
         "package_name": "org.telegram.messenger",
+        "language_code": "en",
+        "country_code": "us",
         "category_codes": ["messaging", "social_network"],
         "primary_category_code": "messaging",
     }
@@ -48,6 +50,8 @@ def test_create_application_persists_one_primary_category(
     body = response.json()
     assert body["name"] == payload["name"]
     assert body["package_name"] == payload["package_name"]
+    assert body["language_code"] == "en"
+    assert body["country_code"] == "us"
     assert body["is_active"] is True
     assert body["deactivated_at"] is None
     assert body["created_at"]
@@ -59,7 +63,8 @@ def test_create_application_persists_one_primary_category(
 
     application = db_connection.execute(
         """
-        SELECT id, name, package_name, is_active, deactivated_at
+        SELECT id, name, package_name, language_code, country_code,
+               is_active, deactivated_at
         FROM applications
         WHERE id = %s
         """,
@@ -70,6 +75,8 @@ def test_create_application_persists_one_primary_category(
     assert application[1:] == (
         "Telegram",
         "org.telegram.messenger",
+        "en",
+        "us",
         True,
         None,
     )
@@ -155,6 +162,8 @@ def test_get_application_returns_its_categories(
             "id",
             "name",
             "package_name",
+            "language_code",
+            "country_code",
             "is_active",
             "deactivated_at",
             "created_at",
@@ -166,6 +175,8 @@ def test_get_application_returns_its_categories(
             "id",
             "name",
             "package_name",
+            "language_code",
+            "country_code",
             "is_active",
             "deactivated_at",
             "created_at",
@@ -270,6 +281,61 @@ def test_patch_requires_category_codes_and_primary_together(
     response = api_client.patch(f"/applications/{created['id']}", json=payload)
 
     assert response.status_code == 422
+
+
+def test_patch_updates_and_clears_locale_atomically_without_changing_other_fields(
+    api_client: TestClient,
+    db_connection: psycopg.Connection[Any],
+    create_application: Callable[..., dict[str, Any]],
+) -> None:
+    created = create_application(name="Unchanged", language_code="en", country_code="us")
+
+    updated = api_client.patch(
+        f"/applications/{created['id']}",
+        json={"language_code": "fa", "country_code": "ir"},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["language_code"] == "fa"
+    assert updated.json()["country_code"] == "ir"
+    assert updated.json()["name"] == "Unchanged"
+    assert updated.json()["categories"] == created["categories"]
+
+    cleared = api_client.patch(
+        f"/applications/{created['id']}",
+        json={"language_code": None, "country_code": None},
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.json()["language_code"] is None
+    assert cleared.json()["country_code"] is None
+    assert db_connection.execute(
+        "SELECT language_code, country_code FROM applications WHERE id = %s",
+        (created["id"],),
+    ).fetchone() == (None, None)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"language_code": "fa"},
+        {"country_code": "ir"},
+        {"language_code": "fa", "country_code": None},
+    ],
+)
+def test_patch_rejects_partial_locale_without_changing_application(
+    api_client: TestClient,
+    create_application: Callable[..., dict[str, Any]],
+    payload: dict[str, Any],
+) -> None:
+    created = create_application(language_code="en", country_code="us")
+
+    response = api_client.patch(f"/applications/{created['id']}", json=payload)
+
+    assert response.status_code == 422
+    persisted = api_client.get(f"/applications/{created['id']}").json()
+    assert persisted["language_code"] == "en"
+    assert persisted["country_code"] == "us"
 
 
 @pytest.mark.parametrize(

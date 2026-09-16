@@ -55,6 +55,8 @@ class ApplicationRegistryService:
                 application = Application(
                     name=data.name,
                     package_name=data.package_name,
+                    language_code=data.language_code,
+                    country_code=data.country_code,
                     category_assignments=[],
                 )
                 self._repository.set_category_assignments(
@@ -97,6 +99,9 @@ class ApplicationRegistryService:
                 if "package_name" in changes:
                     assert data.package_name is not None
                     application.package_name = data.package_name
+                if "language_code" in changes:
+                    application.language_code = data.language_code
+                    application.country_code = data.country_code
 
                 if "category_codes" in changes:
                     category_codes = data.category_codes

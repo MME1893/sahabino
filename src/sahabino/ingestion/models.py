@@ -116,7 +116,7 @@ class Review(Base):
 class ReviewObservation(Base):
     __tablename__ = "review_observations"
     __table_args__ = (
-        CheckConstraint("position >= 1 AND position <= 100", name="position_range"),
+        CheckConstraint("position >= 1 AND position <= 1000", name="position_range"),
         CheckConstraint("score >= 1 AND score <= 5", name="score_range"),
         CheckConstraint("thumbs_up_count >= 0", name="thumbs_up_count_non_negative"),
     )

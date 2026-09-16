@@ -46,6 +46,7 @@ def test_real_kafka_to_postgres_flow_and_committed_group_resume(
             observed_at=datetime(2026, 9, 11, 18, tzinfo=UTC),
             score=5,
             content="persisted by real Kafka flow",
+            position=1000,
         )
     )
 
@@ -87,6 +88,7 @@ def test_real_kafka_to_postgres_flow_and_committed_group_resume(
         assert session.scalar(select(func.count()).select_from(PlaystoreAppSnapshot)) == 1
         assert session.scalar(select(func.count()).select_from(Review)) == 1
         assert session.scalar(select(func.count()).select_from(ReviewObservation)) == 1
+        assert session.scalars(select(ReviewObservation)).one().position == 1000
         offsets = session.execute(
             select(IngestedEvent.topic, IngestedEvent.partition, IngestedEvent.offset)
         ).all()

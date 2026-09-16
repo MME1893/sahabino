@@ -25,6 +25,20 @@ def test_application_lifecycle_check_constraint(
     db_connection.rollback()
 
 
+def test_application_locale_pair_check_constraint(
+    db_connection: psycopg.Connection[Any],
+    create_application: Callable[..., dict[str, Any]],
+) -> None:
+    application = create_application()
+
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db_connection.execute(
+            "UPDATE applications SET language_code = 'fa' WHERE id = %s",
+            (application["id"],),
+        )
+    db_connection.rollback()
+
+
 def test_only_one_primary_category_is_allowed_by_database(
     db_connection: psycopg.Connection[Any],
     create_application: Callable[..., dict[str, Any]],

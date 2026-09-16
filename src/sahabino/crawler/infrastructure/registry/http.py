@@ -79,6 +79,12 @@ class HttpApplicationRegistry:
                 application_id=UUID(str(item["id"])),
                 name=str(item["name"]),
                 package_name=str(item["package_name"]),
+                language_code=(
+                    str(item["language_code"]) if item.get("language_code") is not None else None
+                ),
+                country_code=(
+                    str(item["country_code"]) if item.get("country_code") is not None else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise RegistryUnavailable("Registry application item is invalid") from error

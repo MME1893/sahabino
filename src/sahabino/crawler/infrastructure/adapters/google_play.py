@@ -30,32 +30,37 @@ def _default_review_fetcher(**kwargs: Any) -> list[dict[str, Any]]:
     from google_play_scraper import Sort
     from google_play_scraper.constants.element import ElementSpecs
     from google_play_scraper.constants.request import Formats
-    from google_play_scraper.features.reviews import _fetch_review_items
+    from google_play_scraper.features.reviews import MAX_COUNT_EACH_FETCH, _fetch_review_items
 
     app_id = str(kwargs["app_id"])
     language_code = str(kwargs["lang"])
     country_code = str(kwargs["country"])
     count = int(kwargs["count"])
     url = Formats.Reviews.build(lang=language_code, country=country_code)
-    items, _ = _fetch_review_items(
-        url,
-        app_id,
-        Sort.NEWEST.value,
-        count,
-        None,
-        None,
-        None,
-    )
     result: list[dict[str, Any]] = []
-    for item in items[:count]:
-        raw = {
-            key: spec.extract_content(item)
-            for key, spec in ElementSpecs.Review.items()
-            if key not in {"at", "repliedAt"}
-        }
-        timestamp = item[5][0] if len(item) > 5 and item[5] else None
-        raw["at"] = datetime.fromtimestamp(timestamp, UTC) if timestamp is not None else None
-        result.append(raw)
+    token: Any = None
+    while len(result) < count:
+        fetch_count = min(count - len(result), MAX_COUNT_EACH_FETCH)
+        items, token = _fetch_review_items(
+            url,
+            app_id,
+            Sort.NEWEST.value,
+            fetch_count,
+            None,
+            None,
+            token,
+        )
+        for item in items[:fetch_count]:
+            raw = {
+                key: spec.extract_content(item)
+                for key, spec in ElementSpecs.Review.items()
+                if key not in {"at", "repliedAt"}
+            }
+            timestamp = item[5][0] if len(item) > 5 and item[5] else None
+            raw["at"] = datetime.fromtimestamp(timestamp, UTC) if timestamp is not None else None
+            result.append(raw)
+        if not items or not isinstance(token, str):
+            break
     return result
 
 
@@ -108,7 +113,7 @@ class GooglePlayScraperAdapter:
         limit: int,
     ) -> ReviewsDTO:
         validate_package(package_name)
-        effective_limit = min(limit, 100)
+        effective_limit = min(limit, 1000)
         if effective_limit < 1:
             raise ValueError("review limit must be positive")
         raw_reviews = self._review_fetcher(
