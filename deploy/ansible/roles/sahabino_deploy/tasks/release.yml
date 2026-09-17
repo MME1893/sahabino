@@ -1,29 +1,130 @@
 ---
-- name: Build the application images from the checked-out revision
+# A successful daemon pull does not help if BuildKit is forced to query GHCR
+# again for every build. Prefer the already verified local base images and
+# explicitly fetch only missing pinned tags, with bounded retries.
+- name: Check snapshot capacity before downloading or building images
   ansible.builtin.command:
-    argv: "{{ sahabino_compose_cli + ['build', '--pull'] + sahabino_application_services }}"
-    chdir: "{{ sahabino_app_dir }}"
-  changed_when: true
-
-- name: Ensure the pinned external SeaweedFS image is available
-  ansible.builtin.command:
-    argv: "{{ sahabino_compose_cli + ['pull', '--policy', 'missing', 'seaweedfs'] }}"
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_backup.py"
+      - --preflight-only
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+      - --backup-root
+      - "{{ sahabino_release_backup_dir }}"
+      - --app
+      - "{{ sahabino_app_dir }}"
+      - --vault-password-file
+      - "{{ sahabino_backup_vault_password_file }}"
+      - --margin-bytes
+      - "{{ sahabino_release_backup_margin_bytes | string }}"
     chdir: "{{ sahabino_app_dir }}"
   changed_when: false
 
-- name: Start SeaweedFS before interrupting existing application workers
-  community.docker.docker_compose_v2:
-    project_src: "{{ sahabino_app_dir }}"
-    files: "{{ sahabino_compose_files }}"
-    env_files:
-      - .env
-    project_name: "{{ sahabino_compose_project_name }}"
-    profiles: "{{ sahabino_compose_profiles }}"
-    services: "{{ sahabino_network_infrastructure_services }}"
-    state: present
-    recreate: always
-    wait: true
-    wait_timeout: 120
+- name: Inspect required application base images locally
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "{{ item }}"
+  loop:
+    - python:3.12-slim
+    - python:3.12-slim-bookworm
+    - ghcr.io/astral-sh/uv:0.12.1
+  register: sahabino_base_image_inspection
+  changed_when: false
+  failed_when: false
+
+- name: Pull missing application base images with bounded retries
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - pull
+      - "{{ item.item }}"
+  loop: "{{ sahabino_base_image_inspection.results }}"
+  when: item.rc != 0
+  register: sahabino_missing_base_image_pull
+  retries: 3
+  delay: 15
+  until: sahabino_missing_base_image_pull.rc == 0
+  changed_when: true
+
+- name: Build the application images from the checked-out revision
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['build'] + sahabino_application_services }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Tag freshly built images with the exact selected release SHA
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - tag
+      - "{{ sahabino_compose_project_name }}-{{ item }}:latest"
+      - "{{ sahabino_compose_project_name }}-{{ item }}:{{ sahabino_deploy_revision }}"
+  loop: "{{ sahabino_application_services }}"
+  changed_when: true
+
+- name: Recheck snapshot capacity after building images
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_backup.py"
+      - --preflight-only
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+      - --backup-root
+      - "{{ sahabino_release_backup_dir }}"
+      - --app
+      - "{{ sahabino_app_dir }}"
+      - --vault-password-file
+      - "{{ sahabino_backup_vault_password_file }}"
+      - --margin-bytes
+      - "{{ sahabino_release_backup_margin_bytes | string }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Ensure the pinned external SeaweedFS image is available
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['pull', '--policy', 'missing', 'seaweedfs', 'postgres', 'kafka', 'grafana', 'loki', 'alloy'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Ensure SeaweedFS is running without recreating an existing data-bearing container
+  ansible.builtin.command:
+    argv: "{{ ['python3', sahabino_app_dir + '/deploy/ansible/tools/release_containers.py', 'ensure', '--project', sahabino_compose_project_name, '--service', 'seaweedfs', '--'] + sahabino_compose_cli }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Check SeaweedFS readiness directly without HTTP proxy
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + ['exec', '-T', 'seaweedfs', 'sh', '-c',
+        'env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy wget -q --spider http://127.0.0.1:9333/cluster/status'] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_seaweed_ready
+  changed_when: false
+  retries: "{{ sahabino_healthcheck_retries }}"
+  delay: "{{ sahabino_healthcheck_delay_seconds }}"
+  until: sahabino_seaweed_ready.rc == 0
+
+# A running container can retain an OLD single-file bind mount across Git
+# checkout, even when the host's entrypoint was updated. Stream the exact
+# checked-out verifier into the existing container instead of executing its
+# potentially stale mounted copy. No container/data recreation before backup.
+- name: Verify SeaweedFS runtime before entering maintenance
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + [
+        'exec', '-T', '--user', '0', 'seaweedfs', 'sh', '-s', '--', '--verify-runtime'
+      ] }}
+    chdir: "{{ sahabino_app_dir }}"
+    stdin: "{{ lookup('ansible.builtin.file', sahabino_app_dir + '/infrastructure/network/seaweedfs-entrypoint.sh') }}"
+    stdin_add_newline: false
+  changed_when: false
 
 - name: Initialize or verify the production capture bucket idempotently
   ansible.builtin.command:
@@ -54,8 +155,10 @@
     that:
       - sahabino_crawler_drain.rc in [0, 3, 4]
     fail_msg: >-
-      Crawler-state verification failed. Deployment is aborted without offering
-      an interruption override because active work could not be proven safe.
+      Crawler-state verification failed (rc={{ sahabino_crawler_drain.rc }};
+      stderr={{ sahabino_crawler_drain.stderr | default('') | trim | truncate(600, true) }}).
+      Deployment is aborted without offering an interruption override because
+      active work could not be proven safe.
 
 - name: Ask whether to explicitly interrupt work that survived the drain timeout
   ansible.builtin.pause:
@@ -95,29 +198,28 @@
   changed_when: false
   when: sahabino_crawler_drain.rc != 4
 
-- name: Stop database-writing application services before migration
-  community.docker.docker_compose_v2:
-    project_src: "{{ sahabino_app_dir }}"
-    files: "{{ sahabino_compose_files }}"
-    env_files:
-      - .env
-    project_name: "{{ sahabino_compose_project_name }}"
-    profiles: "{{ sahabino_compose_profiles }}"
-    services: "{{ sahabino_database_writers }}"
-    state: stopped
+- name: Mark the transition to the controlled maintenance window
+  ansible.builtin.set_fact:
+    sahabino_deployment_writer_stop_started: true
 
-- name: Start PostgreSQL and Kafka and wait for Compose health checks
-  community.docker.docker_compose_v2:
-    project_src: "{{ sahabino_app_dir }}"
-    files: "{{ sahabino_compose_files }}"
-    env_files:
-      - .env
-    project_name: "{{ sahabino_compose_project_name }}"
-    profiles: "{{ sahabino_compose_profiles }}"
-    services: "{{ sahabino_infrastructure_services }}"
-    state: present
-    wait: true
-    wait_timeout: 120
+- name: Stop application writers before the consistent backup and migration
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+      - stop-app
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_writer_stop
+  changed_when: "sahabino_writer_stop.stdout | trim != 'STOPPED:'"
+
+- name: Ensure PostgreSQL and Kafka are running without recreating existing data containers
+  ansible.builtin.command:
+    argv: "{{ ['python3', sahabino_app_dir + '/deploy/ansible/tools/release_containers.py', 'ensure', '--project', sahabino_compose_project_name, '--service', item, '--'] + sahabino_compose_cli }}"
+    chdir: "{{ sahabino_app_dir }}"
+  loop: "{{ sahabino_infrastructure_services }}"
+  changed_when: false
 
 - name: Verify PostgreSQL readiness explicitly
   ansible.builtin.command:
@@ -148,6 +250,112 @@
   retries: "{{ sahabino_healthcheck_retries }}"
   delay: "{{ sahabino_healthcheck_delay_seconds }}"
   until: sahabino_kafka_ready.rc == 0
+
+- name: Create a second PostgreSQL backup after writers have stopped
+  ansible.builtin.set_fact:
+    sahabino_backup_kind: pre-deploy
+    sahabino_backup_label: "consistent-{{ sahabino_deploy_revision }}"
+
+- name: Verify the database snapshot from the quiescent writer checkpoint
+  ansible.builtin.include_role:
+    name: sahabino_backup
+    tasks_from: run
+
+- name: Require a verified PostgreSQL dump before persistent-data snapshot
+  ansible.builtin.assert:
+    that:
+      - sahabino_created_backup_path is defined
+      - sahabino_backup_command.stdout is match('^CREATED:')
+    fail_msg: The consistent pre-migration PostgreSQL dump was not created.
+
+- name: Snapshot Kafka, SeaweedFS, observability and encrypted secrets to local disk
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_backup.py"
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+      - --backup-root
+      - "{{ sahabino_release_backup_dir }}"
+      - --app
+      - "{{ sahabino_app_dir }}"
+      - --pg-dump
+      - "{{ sahabino_created_backup_path }}"
+      - --vault-password-file
+      - "{{ sahabino_backup_vault_password_file }}"
+      - --margin-bytes
+      - "{{ sahabino_release_backup_margin_bytes | string }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_release_backup
+  changed_when: true
+  # This output contains paths, sizes and status, never secret values.
+
+- name: Require the persistent-data backup manifest before any migration
+  ansible.builtin.assert:
+    that:
+      - sahabino_release_backup.stdout is search('BACKUP_VERIFIED:')
+    fail_msg: Persistent-data snapshot did not complete; refusing migration.
+
+- name: Remove only stopped and mount-free application containers with missing images
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+      - remove-stale
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: "sahabino_stale_cleanup.stdout | trim != 'REMOVED:'"
+  register: sahabino_stale_cleanup
+
+- name: Resolve the successful full-snapshot manifest path
+  ansible.builtin.set_fact:
+    sahabino_release_backup_manifest: >-
+      {{ (sahabino_release_backup.stdout_lines
+          | select('match', '^BACKUP_VERIFIED:') | list | last)
+          | regex_replace('^BACKUP_VERIFIED:', '') }}/manifest.json
+
+- name: Remove stale SeaweedFS or observability containers only after verifying their volume backups
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+      - remove-stale-persisted
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+      - --backup-manifest
+      - "{{ sahabino_release_backup_manifest }}"
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_persisted_stale_cleanup
+  changed_when: "sahabino_persisted_stale_cleanup.stdout | trim != 'REMOVED_PERSISTED:'"
+
+- name: Reconcile SeaweedFS healthcheck and configuration after the verified snapshot
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', 'seaweedfs'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Wait for SeaweedFS health after controlled reconciliation
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'inspect', '--format', '{{.State.Health.Status}}', sahabino_compose_project_name + '-seaweedfs-1'] }}"
+  register: sahabino_seaweed_post_backup_health
+  changed_when: false
+  retries: 30
+  delay: 3
+  until: sahabino_seaweed_post_backup_health.stdout | trim == 'healthy'
+
+- name: Recheck Kafka readiness after the cold snapshot restart
+  ansible.builtin.command:
+    argv: >-
+      {{ sahabino_compose_cli + ['exec', '-T', 'kafka',
+        '/opt/kafka/bin/kafka-broker-api-versions.sh',
+        '--bootstrap-server', 'localhost:19092'] }}
+    chdir: "{{ sahabino_app_dir }}"
+  register: sahabino_post_snapshot_kafka_ready
+  changed_when: false
+  retries: 30
+  delay: 3
+  until: sahabino_post_snapshot_kafka_ready.rc == 0
 
 - name: Apply Alembic migrations explicitly
   ansible.builtin.command:
@@ -208,15 +416,34 @@
   register: sahabino_kafka_topics
   changed_when: "'Created Kafka topics:' in sahabino_kafka_topics.stdout"
 
-- name: Start or update application and observability services
-  community.docker.docker_compose_v2:
-    project_src: "{{ sahabino_app_dir }}"
-    files: "{{ sahabino_compose_files }}"
-    env_files:
-      - .env
-    project_name: "{{ sahabino_compose_project_name }}"
-    profiles: "{{ sahabino_compose_profiles }}"
-    services: "{{ sahabino_application_services + sahabino_observability_services }}"
-    state: present
-    wait: true
-    wait_timeout: 120
+# API must reach health before crawler starts: --no-deps bypasses Compose's
+# depends_on ordering, so starting all workers simultaneously is unsafe.
+- name: Start the newly built API and wait for its health before worker recreation
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '120', 'api'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Recreate ingestion and network analyzer after API readiness
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '120', 'ingestion', 'network-analyzer'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Recreate the crawler only after API and other workers are started
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '120', 'crawler'] }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Start or reconcile observability without deleting its persisted volumes
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never'] + sahabino_observability_services }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: true
+
+- name: Wait for all application and observability services to become ready
+  ansible.builtin.command:
+    argv: "{{ sahabino_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120'] + sahabino_application_services + sahabino_observability_services }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false

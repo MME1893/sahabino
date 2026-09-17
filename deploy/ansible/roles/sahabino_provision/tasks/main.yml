@@ -41,6 +41,14 @@
     group: "{{ sahabino_deploy_group }}"
     mode: "0750"
 
+- name: Create the root-only release backup directory
+  ansible.builtin.file:
+    path: "{{ sahabino_release_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Create the PostgreSQL backup directory
   ansible.builtin.file:
     path: "{{ sahabino_backup_dir }}"

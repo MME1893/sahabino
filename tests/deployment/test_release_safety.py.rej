@@ -1,0 +1,47 @@
+diff a/tests/deployment/test_release_safety.py b/tests/deployment/test_release_safety.py	(rejected hunks)
+@@ -690,3 +690,45 @@
+     )
+     assert containers.main() == 0
+     assert seen == ["sahabino"]
++
++
++@pytest.mark.parametrize("service", ["postgres", "kafka", "seaweedfs"])
++def test_persisted_container_requires_original_data_mount_before_start(service: str) -> None:
++    class Runner:
++        def __init__(self) -> None:
++            self.calls: list[list[str]] = []
++
++        def __call__(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
++            self.calls.append(argv)
++            if argv[:3] == ["docker", "ps", "-aq"]:
++                return response(argv, stdout="existing-id\n")
++            if argv[:4] == ["docker", "inspect", "--type", "container"]:
++                return response(argv, stdout=json.dumps([{
++                    "Id": "existing-id", "State": {"Running": False},
++                    "Mounts": [{"Type": "volume", "Name": "incorrect-volume", "Destination": "/data"}],
++                }]))
++            raise AssertionError(f"No mutations or additional Docker calls should occur: {argv}")
++
++    runner = Runner()
++    with pytest.raises(RuntimeError, match="Unsafe.*data mount"):
++        containers.ensure_infrastructure(
++            "sahabino", service,
++            ["docker", "compose", "--project-name", "sahabino"], runner=runner,
++        )
++    assert not any(argv[1] in ("start", "rm", "volume") or "up" in argv for argv in runner.calls)
++
++
++def test_restored_api_is_healthy_before_workers_and_crawler() -> None:
++    text = (ROOT / "deploy/ansible/roles/sahabino_restore/tasks/main.yml").read_text()
++    assert text.index("- name: Start the API using") < text.index(
++        "- name: Verify API health after restore before"
++    ) < text.index("- name: Start ingestion and analyzer") < text.index(
++        "- name: Start crawler only after"
++    )
++    assert "use_proxy: false" in text
++
++
++def test_api_self_health_ignores_injected_http_proxy() -> None:
++    compose = (ROOT / "docker-compose.yml").read_text()
++    assert "urllib.request.ProxyHandler({})" in compose
++    assert "http://127.0.0.1:8000/docs" in compose

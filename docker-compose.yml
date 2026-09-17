@@ -95,7 +95,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs', timeout=2)",
+          "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:8000/docs', timeout=2)",
         ]
       interval: 5s
       timeout: 5s
@@ -175,7 +175,11 @@ services:
 
 
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://seaweedfs:9333/cluster/status"]
+      test:
+        [
+          "CMD-SHELL",
+          "env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy wget -q --spider http://127.0.0.1:9333/cluster/status",
+        ]
       interval: 5s
       timeout: 5s
       retries: 20

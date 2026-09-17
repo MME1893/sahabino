@@ -85,7 +85,7 @@
 - name: Extract the Docker Compose semantic version
   ansible.builtin.set_fact:
     sahabino_compose_version: >-
-      {{ sahabino_compose_version_command.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+') }}
+      {{ sahabino_compose_version_command.stdout | regex_search('[0-9]+[.][0-9]+[.][0-9]+') }}
 
 - name: Require Compose support for the production override tags
   ansible.builtin.assert:
@@ -104,6 +104,10 @@
       - sahabino_backup_executable_stat.stat.exists
       - sahabino_backup_executable_stat.stat.executable | default(false)
     fail_msg: Run provision.yml before the first deployment.
+
+- name: Warn that release backups are local to this VPS
+  ansible.builtin.debug:
+    msg: "LOCAL-ONLY BACKUP: loss of the VPS/disk can destroy both production and backups. No offsite backup is configured."
 
 - name: Check whether the application directory exists
   ansible.builtin.stat:

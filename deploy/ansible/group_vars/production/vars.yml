@@ -62,6 +62,10 @@ sahabino_allow_active_crawl_interruption: false
 sahabino_crawler_drain_interactive: false
 
 sahabino_backup_dir: /var/backups/sahabino/postgres
+# Local-only, fail-closed release snapshots.  1 GiB independent safety reserve.
+sahabino_release_backup_dir: /var/backups/sahabino/releases
+sahabino_release_backup_margin_bytes: 1073741824
+sahabino_backup_vault_password_file: /etc/sahabino/ansible-vault-password
 sahabino_backup_retention_days: 14
 sahabino_backup_schedule: "*-*-* 02:30:00 UTC"
 sahabino_backup_randomized_delay: 15m

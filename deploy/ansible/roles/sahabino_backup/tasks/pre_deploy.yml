@@ -51,8 +51,40 @@
     sahabino_backup_label: >-
       current-{{ sahabino_pre_backup_revision_command.stdout | default('unknown') }}-to-{{ sahabino_deploy_revision }}
 
-- name: Run and verify the pre-deployment backup
+- name: Reuse the pre-checkout PostgreSQL dump when the staged launcher already verified it
+  ansible.builtin.set_fact:
+    sahabino_created_backup_path: "{{ sahabino_precheckout_backup_path }}"
+  when: sahabino_precheckout_backup_path | default('') | length > 0
+
+- name: Independently verify the pre-checkout backup before accepting it
+  ansible.builtin.command:
+    argv:
+      - pg_restore
+      - --list
+      - "{{ sahabino_created_backup_path }}"
+  changed_when: false
+  when: sahabino_precheckout_backup_path | default('') | length > 0
+
+- name: Run and verify the pre-deployment backup when the launcher did not already create one
   ansible.builtin.include_tasks: run.yml
+  when: sahabino_precheckout_backup_path | default('') | length == 0
+
+- name: Check whether the PostgreSQL volume exists even if its container is missing
+  ansible.builtin.command:
+    argv:
+      - docker
+      - volume
+      - inspect
+      - "{{ sahabino_compose_project_name }}_postgres_data"
+  register: sahabino_postgres_volume_check
+  changed_when: false
+  failed_when: false
+
+- name: Refuse deployment when an orphaned PostgreSQL volume cannot be dumped
+  ansible.builtin.assert:
+    that:
+      - sahabino_postgres_volume_check.rc != 0 or sahabino_created_backup_path is defined
+    fail_msg: PostgreSQL volume exists without a verified database backup; manual recovery required.
 
 - name: Require a verified backup when a PostgreSQL container was present
   ansible.builtin.assert:

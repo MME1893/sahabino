@@ -7,10 +7,28 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 
-QUERY = "SELECT COUNT(*) FROM crawl_runs WHERE status IN ('pending', 'running');"
+# Before the first Alembic migration, a genuinely empty database has no
+# application tables.  A partially migrated database is *not* a first install:
+# never treat a missing crawl_runs table in a populated schema as an empty queue.
+SCHEMA_QUERY = """
+SELECT CASE
+  WHEN to_regclass('public.crawl_runs') IS NOT NULL THEN 'READY'
+  WHEN EXISTS (
+    SELECT 1 FROM pg_catalog.pg_tables WHERE schemaname = 'public'
+  ) THEN 'INCOMPLETE'
+  ELSE 'FRESH'
+END;
+"""
+QUERY = "SELECT COUNT(*) FROM public.crawl_runs WHERE status IN ('pending', 'running');"
 QUERY_COMMAND = (
-    "exec psql --no-psqlrc --tuples-only --no-align "
-    '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"'
+    'state="$(psql --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align '
+    '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1")"; '
+    'case "$state" in '
+    'FRESH) printf "0\\n" ;; '
+    "READY) exec psql --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align "
+    '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$2" ;; '
+    '*) printf "Incomplete or unrecognized crawler schema: %s\\n" "$state" >&2; exit 3 ;; '
+    "esac"
 )
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 NO_CRAWLER = 4
@@ -21,13 +39,21 @@ class CrawlStateError(RuntimeError):
 
 
 def _default_runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=False, capture_output=True, text=True)
+    try:
+        return subprocess.run(command, check=False, capture_output=True, text=True, timeout=35)
+    except subprocess.TimeoutExpired as error:
+        raise CrawlStateError("crawler-state command timed out after 35 seconds") from error
+    except OSError as error:
+        raise CrawlStateError(f"Unable to execute crawler-state command: {error}") from error
 
 
 def crawler_is_running(compose: Sequence[str], runner: Runner) -> bool:
     result = runner([*compose, "ps", "--quiet", "crawler"])
     if result.returncode != 0:
-        raise CrawlStateError("Compose could not determine whether crawler is running")
+        raise CrawlStateError(
+            f"Compose could not determine whether crawler is running: \
+                {result.stderr.strip()[-500:]}"
+        )
     return bool(result.stdout.strip())
 
 
@@ -43,17 +69,22 @@ def active_crawl_count(compose: Sequence[str], runner: Runner) -> int:
             "-c",
             QUERY_COMMAND,
             "sh",
+            SCHEMA_QUERY,
             QUERY,
         ]
     )
     if result.returncode != 0:
-        raise CrawlStateError("authoritative crawler-state database query failed")
+        raise CrawlStateError(
+            f"authoritative crawler-state database query failed: {result.stderr.strip()[-500:]}"
+        )
     try:
         count = int(result.stdout.strip())
     except ValueError as error:
         raise CrawlStateError("crawler-state query returned an invalid count") from error
     if count < 0:
-        raise CrawlStateError("crawler-state query returned a negative count")
+        raise CrawlStateError(
+            "crawler-state schema is incomplete (crawl_runs missing in nonempty database)"
+        )
     return count
 
 
@@ -66,8 +97,19 @@ def wait_for_drain(
     monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> int:
-    if not crawler_is_running(compose, runner):
-        print("Crawler is not running; treating this as a first deployment.")
+    # The container can be absent even when its database has unfinished jobs.
+    # Query PostgreSQL FIRST; an absent crawler does not prove an empty queue.
+    running = crawler_is_running(compose, runner)
+    if not running:
+        count = active_crawl_count(compose, runner)
+        if count:
+            print(
+                f"Crawler container absent but {count} persisted crawl run(s) remain; "
+                "explicit interruption authorization is required.",
+                file=sys.stderr,
+            )
+            return 3
+        print("Crawler is absent and authoritative database state has no pending work.")
         return NO_CRAWLER
     deadline = monotonic() + timeout_seconds
     while True:
@@ -100,15 +142,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--poll", type=float, default=10.0)
     parser.add_argument("--allow-active-interruption", action="store_true")
-    parser.add_argument("compose", nargs=argparse.REMAINDER)
     return parser
 
 
 def main(argv: list[str]) -> int:
-    arguments = _parser().parse_args(argv[1:])
-    compose = arguments.compose
-    if compose and compose[0] == "--":
-        compose = compose[1:]
+    if any(arg in ("-h", "--help") for arg in argv[1:]):
+        _parser().parse_args(["--help"])
+        return 0
+    # Ansible passes options AFTER `wait`/`final`. argparse.REMAINDER used to
+    # swallow these options into the Compose command, attempting to execute
+    # `--timeout` or `--allow-active-interruption` instead of `docker`.
+    # Split on the explicit separator before parsing our own arguments.
+    try:
+        separator = argv.index("--", 1)
+    except ValueError:
+        print("crawler drain requires '--' before the Compose command", file=sys.stderr)
+        return 2
+    arguments = _parser().parse_args(argv[1:separator])
+    compose = argv[separator + 1 :]
     if not compose:
         print("crawler drain requires a Compose command", file=sys.stderr)
         return 2

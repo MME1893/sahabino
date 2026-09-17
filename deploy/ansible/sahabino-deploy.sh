@@ -22,7 +22,7 @@ umask 077
 # lose arguments or shell quoting.
 ORIGINAL_ARGS=("$@")
 
-ASSISTANT_VERSION="2026.09.15.1"
+ASSISTANT_VERSION="2026.09.17.4"
 PROGRAM_NAME="$(basename "$0")"
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
@@ -79,6 +79,11 @@ VAULT_PLAINTEXT_TEMP=""
 VAULT_PASSWORD_STORE="${SAHABINO_VAULT_PASSWORD_STORE:-/etc/sahabino/ansible-vault-password}"
 ERROR_REPORTED=0
 TARGET_REVISION="${SAHABINO_DEPLOY_REVISION:-}"
+# A completed branch resolution is pinned to one SHA, never looked up again
+# during this deployment.  A staged release re-executes only once.
+BOOTSTRAP_REVISION="${SAHABINO_BOOTSTRAP_READY:-}"
+DEPLOY_LOCK_HELD=0
+PRECHECKOUT_BACKUP_PATH=""
 MODE="full"
 ASSUME_YES=0
 NO_REBOOT=0
@@ -153,7 +158,7 @@ Modes:
   --verify                  Only verify the currently running deployment
 
 Options:
-  --revision REV             Branch/tag/SHA to deploy; resolved to a full SHA.
+  --revision REV             Remote branch/tag/SHA; branch always means latest origin tip.
   --repository-url URL       Read-only production Git URL. Required for a
                              standalone first run when it cannot be discovered
                              from project vars.
@@ -1919,33 +1924,179 @@ ensure_vault_password_for_existing() {
 }
 
 remote_default_revision() {
-  local ref
-  ref=$(run_as_deploy_git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [[ -z "$ref" ]]; then
-    ref=$(run_as_deploy_git ls-remote --symref origin HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/", "origin/", $2); print $2; exit}')
-  fi
-  printf '%s' "$ref"
+  # Ask the remote, not a possibly stale origin/HEAD symbolic ref in this clone.
+  run_as_deploy_git ls-remote --symref origin HEAD |
+    awk '/^ref: refs\/heads\// {sub("refs/heads/", "", $2); print $2; exit}'
 }
 
 resolve_revision() {
   step "Deployment revision"
-  local input resolved default_revision
-  run_as_deploy_git fetch --prune origin; run_as_deploy_git fetch --tags origin
+  local input resolved default_revision remote_sha branch
+  run_as_deploy_git fetch --prune origin
+  run_as_deploy_git fetch --tags origin
   default_revision=$(remote_default_revision)
   if [[ -z "$TARGET_REVISION" ]]; then
     if [[ -n "$default_revision" ]]; then
-      if (( ASSUME_YES )); then input="$default_revision"; else input=$(prompt_default "Revision to deploy (branch/tag/SHA)" "$default_revision"); fi
+      if (( ASSUME_YES )); then input="$default_revision"; else input=$(prompt_default "Remote branch, tag or SHA to deploy" "$default_revision"); fi
+    elif (( ASSUME_YES )); then
+      error "Remote default branch unavailable. Supply --revision."; return 1
     else
-      if (( ASSUME_YES )); then
-        error "Remote default branch could not be discovered. Supply --revision explicitly."; return 1
-      fi
-      while [[ -z "${input:-}" ]]; do read -r -p "Revision to deploy (branch/tag/SHA): " input; done
+      while [[ -z "${input:-}" ]]; do read -r -p "Remote branch, tag or SHA to deploy: " input; done
     fi
-  else input="$TARGET_REVISION"; fi
-  resolved=$(run_as_deploy_git rev-parse --verify "${input}^{commit}" 2>/dev/null || true)
-  if [[ -z "$resolved" && "$input" != origin/* ]]; then resolved=$(run_as_deploy_git rev-parse --verify "origin/${input}^{commit}" 2>/dev/null || true); fi
-  [[ -n "$resolved" ]] || { error "Cannot resolve revision '$input' to a commit."; return 1; }
-  TARGET_REVISION="$resolved"; info "Resolved '$input' -> $TARGET_REVISION"
+  else
+    input="$TARGET_REVISION"
+  fi
+  branch="${input#origin/}"
+  # Branch names are resolved against refs/heads on GitHub, never a local branch.
+  remote_sha=$(run_as_deploy_git ls-remote --exit-code origin "refs/heads/$branch" 2>/dev/null | awk 'NR==1 {print $1}' || true)
+  if [[ -n "$remote_sha" ]]; then
+    resolved=$(run_as_deploy_git rev-parse --verify "refs/remotes/origin/${branch}^{commit}" 2>/dev/null || true)
+    [[ "$resolved" == "$remote_sha" ]] || {
+      error "Remote branch moved during fetch or tracking ref is missing; retry deployment without using stale code."; return 1;
+    }
+    info "Remote branch '$branch' at $remote_sha"
+  elif [[ "$input" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    resolved=$(run_as_deploy_git rev-parse --verify "${input}^{commit}" 2>/dev/null || true)
+  else
+    # Allow explicit immutable tags; do not accept arbitrary local-only refs.
+    remote_sha=$(run_as_deploy_git ls-remote --exit-code origin "refs/tags/$input" 2>/dev/null | awk 'NR==1 {print $1}' || true)
+    [[ -n "$remote_sha" ]] || { error "No remote branch/tag or fetched commit matches '$input'."; return 1; }
+    resolved=$(run_as_deploy_git rev-parse --verify "refs/tags/${input}^{commit}" 2>/dev/null || true)
+  fi
+  [[ "$resolved" =~ ^[0-9a-fA-F]{40}$ ]] || { error "Cannot resolve '$input' to a full fetched commit SHA."; return 1; }
+  TARGET_REVISION="$resolved"
+  info "Pinned selected release '$input' -> $TARGET_REVISION"
+}
+
+acquire_deployment_lock() {
+  [[ "$MODE" == "deploy" || "$MODE" == "full" ]] || return 0
+  if [[ "$BOOTSTRAP_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    # The parent bootstrap process holds the lock until the staged subprocess ends.
+    return 0
+  fi
+  local lockfile="/run/lock/sahabino-production-deploy.lock"
+  exec {SAHABINO_DEPLOY_LOCK_FD}>"$lockfile"
+  if ! flock -n "$SAHABINO_DEPLOY_LOCK_FD"; then
+    error "Another production deployment already holds $lockfile."
+    return 1
+  fi
+  DEPLOY_LOCK_HELD=1
+}
+
+bootstrap_selected_release() {
+  # Fetch the actual selected revision's tools before provisioning.  The
+  # checkout is still untouched, including untracked production credentials.
+  [[ "$MODE" == "deploy" || "$MODE" == "full" ]] || return 0
+  [[ "$BOOTSTRAP_REVISION" == "$TARGET_REVISION" ]] && return 0
+  [[ -z "$BOOTSTRAP_REVISION" ]] || { error "Bootstrap commit mismatch"; return 1; }
+  local stage rc
+  install -d -m 0700 "$RUNTIME_DIR"
+  stage=$(mktemp -d "$RUNTIME_DIR/deployment-source.XXXXXXXX")
+  info "Loading selected release automation from $TARGET_REVISION into a temporary directory."
+  if ! run_as_deploy_git archive --format=tar "$TARGET_REVISION" | tar -xf - -C "$stage"; then
+    rm -rf -- "$stage"
+    error "Unable to stage exact release source; production checkout unchanged."
+    return 1
+  fi
+  if [[ ! -f "$stage/deploy/ansible/sahabino-deploy.sh" || -L "$stage/deploy/ansible/sahabino-deploy.sh" ]]; then
+    rm -rf -- "$stage"
+    error "Selected revision has no safe deployment assistant."
+    return 1
+  fi
+  set +e
+  SAHABINO_BOOTSTRAP_READY="$TARGET_REVISION" \
+    SAHABINO_INVOCATION_DIR="$INVOCATION_DIR" \
+    bash "$stage/deploy/ansible/sahabino-deploy.sh" "${ORIGINAL_ARGS[@]}" --revision "$TARGET_REVISION"
+  rc=$?
+  set -e
+  rm -rf -- "$stage"
+  return "$rc"
+}
+
+precheckout_backup_and_checkout() {
+  [[ "$MODE" == "deploy" || "$MODE" == "full" ]] || return 0
+  # This is the staged assistant.  Never checkout using stale launcher code.
+  [[ "$BOOTSTRAP_REVISION" == "$TARGET_REVISION" ]] || {
+    error "The selected revision's deployment assistant has not been loaded."; return 1;
+  }
+  local current pg_container pg_volume pg_mount result candidate recovery_service
+  current=$(run_as_deploy_git rev-parse HEAD)
+  [[ -z "$(run_as_deploy_git status --porcelain)" ]] || {
+    error "Dirty production checkout; refusing to replace tracked files."; return 1;
+  }
+  # A VPS can retain the named data volumes after its database/broker containers
+  # were removed during a failed deployment. Recover both *inside the assistant*
+  # before the pre-checkout pg_dump. The helper refuses empty/incompatible data,
+  # verifies a cold snapshot, and reattaches the original volumes without rm/-v.
+  step "Recover missing persistent containers without replacing stored data"
+  local -a recovery_compose=()
+  compose_command recovery_compose
+  for recovery_service in postgres kafka; do
+    ( cd "$APP_DIR" &&
+      python3 "$SCRIPT_DIR/tools/release_containers.py" recover-missing \
+        --project "$COMPOSE_PROJECT_NAME" \
+        --service "$recovery_service" \
+        --backup-root /var/backups/sahabino/releases \
+        -- "${recovery_compose[@]}" ) || {
+        error "Automatic $recovery_service recovery failed; production volumes were not removed."
+        return 1
+      }
+  done
+  # Reruns on the selected SHA still require the same orphan recovery: an early
+  # return here previously left PostgreSQL absent and made backup.yml fail.
+  [[ "$current" == "$TARGET_REVISION" ]] && return 0
+  pg_container=$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
+    --filter label=com.docker.compose.service=postgres)
+  pg_mount=$(docker volume inspect --format '{{.Mountpoint}}' "${COMPOSE_PROJECT_NAME}_postgres_data" 2>/dev/null || true)
+  pg_volume=""
+  [[ -n "$pg_mount" ]] && pg_volume="${COMPOSE_PROJECT_NAME}_postgres_data"
+  if [[ -n "$pg_volume" || -n "$pg_container" ]]; then
+    [[ "$(printf '%s\n' "$pg_container" | sed '/^$/d' | wc -l)" -le 1 ]] || {
+      error "Ambiguous PostgreSQL containers; refusing automated pre-checkout dump."; return 1;
+    }
+    [[ -n "$pg_container" && -x /usr/local/sbin/sahabino-postgres-backup ]] || {
+      error "Existing PostgreSQL state lacks its container or verified backup executable; refusing checkout."; return 1;
+    }
+    step "Pre-checkout database safety backup"
+    # Fail before generating even the first dump if the local destination is
+    # too small.  Repeat the more comprehensive volume check after image build.
+    local pg_mount pg_bytes free_bytes backup_fs
+    backup_fs="/var/backups/sahabino/postgres"
+    [[ -d "$backup_fs" ]] || { error "Missing provisioned PostgreSQL backup directory."; return 1; }
+    if [[ -n "$pg_volume" ]]; then
+      [[ -d "$pg_mount" && ! -L "$pg_mount" ]] || { error "Unsafe PostgreSQL volume mountpoint."; return 1; }
+      pg_bytes=$(du -sB1 "$pg_mount" | awk '{print $1}') || return 1
+    else
+      error "PostgreSQL container has no expected named volume; inspect storage before backup."
+      return 1
+    fi
+    free_bytes=$(df -PB1 "$backup_fs" | awk 'NR==2 {print $4}') || return 1
+    [[ "$pg_bytes" =~ ^[0-9]+$ && "$free_bytes" =~ ^[0-9]+$ ]] || {
+      error "Unable to measure PostgreSQL backup capacity."; return 1;
+    }
+    if (( free_bytes < pg_bytes + 1073741824 )); then
+      error "Not enough local disk for pre-checkout backup plus 1 GiB reserve."
+      return 1
+    fi
+    result=$(/usr/local/sbin/sahabino-postgres-backup pre-deploy "before-checkout-${current:0:12}-to-${TARGET_REVISION:0:12}") || return 1
+    [[ "$result" == CREATED:* ]] || { error "Pre-checkout PostgreSQL dump was not created."; return 1; }
+    candidate="${result#CREATED:}"
+    [[ -s "$candidate" ]] && pg_restore --list "$candidate" >/dev/null || {
+      error "Pre-checkout PostgreSQL dump failed validation."; return 1;
+    }
+    PRECHECKOUT_BACKUP_PATH="$candidate"
+    ok "Verified pre-checkout PostgreSQL dump: $candidate"
+  fi
+  step "Checkout the exact pinned remote commit"
+  run_as_deploy_git_worktree checkout --detach "$TARGET_REVISION"
+  [[ "$(run_as_deploy_git rev-parse HEAD)" == "$TARGET_REVISION" ]] || {
+    error "Checkout SHA differs from selected release."; return 1;
+  }
+  [[ -z "$(run_as_deploy_git status --porcelain)" ]] || {
+    error "The checked-out release is dirty."; return 1;
+  }
+  info "Production checkout now pinned to $TARGET_REVISION (old revision $current)."
+  load_project_config
 }
 
 run_ansible_syntax_check() {
@@ -2059,11 +2210,10 @@ run_deploy() {
   local dir deploy_log rc
   dir=$(ansible_dir)
   ensure_vault_password_for_existing
-  resolve_revision
+  [[ "$TARGET_REVISION" =~ ^[0-9a-fA-F]{40}$ ]] || { error "Release SHA was not pinned at bootstrap."; return 1; }
   confirm_api_exposure
   configure_object_storage_exposure
-  # resolve_revision has its own stage; reset it here so failures from the
-  # playbook are attributed to the actual deployment rather than revision lookup.
+  # SHA was fixed before staging the release; do not resolve the branch again.
   step "Production deployment"
   deploy_log="$LOG_ROOT/deploy-$RUN_ID.log"; [[ $EUID -eq 0 ]] || deploy_log="/tmp/sahabino-deploy-playbook-$RUN_ID.log"
   touch "$deploy_log"; chmod 0600 "$deploy_log"
@@ -2074,6 +2224,8 @@ run_deploy() {
     env "ANSIBLE_COLLECTIONS_PATH=$ANSIBLE_COLLECTIONS_DIR" "$ANSIBLE_VENV/bin/ansible-playbook" \
       -i "$INVENTORY_FILE" deploy.yml --vault-password-file "$VAULT_PASSWORD_FILE" \
       -e "sahabino_deploy_revision=$TARGET_REVISION" \
+      -e "sahabino_precheckout_backup_path=$PRECHECKOUT_BACKUP_PATH" \
+      -e "sahabino_backup_vault_password_file=$VAULT_PASSWORD_STORE" \
       -e "sahabino_object_storage_exposure=$OBJECT_STORAGE_EXPOSURE" \
       -e "sahabino_object_storage_bind_address=$OBJECT_STORAGE_BIND_ADDRESS" \
       -e "sahabino_object_storage_public_endpoint_url=$OBJECT_STORAGE_PUBLIC_ENDPOINT" \
@@ -2202,7 +2354,7 @@ wait_http_ready() {
   local deadline=$((SECONDS + timeout_seconds)) body_file status
   body_file=$(mktemp /tmp/sahabino-http-ready.XXXXXX)
   while (( SECONDS < deadline )); do
-    status=$(curl -sS -o "$body_file" -w '%{http_code}' --connect-timeout 3 --max-time 8 "$url" 2>/dev/null || true)
+    status=$(curl --noproxy '*' -sS -o "$body_file" -w '%{http_code}' --connect-timeout 3 --max-time 8 "$url" 2>/dev/null || true)
     if [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
       rm -f "$body_file"
       ok "$label readiness passed: $url ($status)"
@@ -2250,7 +2402,7 @@ require_private_file_mode() {
 wait_for_seaweedfs_health() {
   local deadline=$((SECONDS + 90))
   while (( SECONDS < deadline )); do
-    if compose exec -T seaweedfs wget -q --spider http://127.0.0.1:9333/cluster/status >/dev/null 2>&1; then
+    if compose exec -T seaweedfs sh -c 'env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy wget -q --spider http://127.0.0.1:9333/cluster/status' >/dev/null 2>&1; then
       ok "SeaweedFS master/S3 service is ready."
       return 0
     fi
@@ -2320,26 +2472,11 @@ verify_network_runtime() {
   wait_for_seaweedfs_health || return 1
   verify_seaweedfs_port_binding || return 1
 
-  compose exec -T seaweedfs sh -eu -c '
-    seaweed_uid=$(id -u seaweed 2>/dev/null) || { echo "SeaweedFS seaweed account is missing" >&2; exit 1; }
-    seaweed_gid=$(id -g seaweed 2>/dev/null) || { echo "SeaweedFS seaweed group is missing" >&2; exit 1; }
-    pid1_uid=$(awk '\''/^Uid:/ {print $2}'\'' /proc/1/status)
-    pid1_gid=$(awk '\''/^Gid:/ {print $2}'\'' /proc/1/status)
-    test "$pid1_uid" -ne 0 || { echo "SeaweedFS PID 1 must not run as root" >&2; exit 1; }
-    test "$pid1_uid" = "$seaweed_uid" || { echo "SeaweedFS PID 1 UID does not match the seaweed account" >&2; exit 1; }
-    test "$pid1_gid" = "$seaweed_gid" || { echo "SeaweedFS PID 1 GID does not match the seaweed account" >&2; exit 1; }
-    test -d /data
-    test "$(stat -c %u /data)" = "$seaweed_uid"
-    test "$(stat -c %g /data)" = "$seaweed_gid"
-    su-exec seaweed test -w /data
-    test -f "$1"
-    test ! -L "$1"
-    test "$(stat -c %u "$1")" = 0
-    test "$(stat -c %g "$1")" = "$seaweed_gid"
-    test "$(stat -c %a "$1")" = 640
-    su-exec seaweed test -r "$1"
-    ! su-exec seaweed test -w "$1"
-  ' sh /run/sahabino-seaweedfs/seaweedfs-s3.json || {
+  # Execute the checked-out verifier via stdin. A running container can
+  # retain an older version of its single-file bind mount after Git checkout.
+  # Never trust that the mounted entrypoint has the new --verify-runtime mode.
+  compose exec -T --user 0 seaweedfs sh -s -- --verify-runtime \
+    < "$APP_DIR/infrastructure/network/seaweedfs-entrypoint.sh" || {
     error "SeaweedFS PID 1 or staged-secret ownership/readability verification failed."
     return 1
   }
@@ -2536,8 +2673,34 @@ WHERE ct.status <> '\''succeeded'\'' ORDER BY a.package_name, ct.task_type;
   info "Sahabino project container resource snapshot:"
   verify_project_resources
 
-  [[ -f "$APP_PARENT/DEPLOYED_REVISION" ]] && { printf 'Deployed revision: '; cat "$APP_PARENT/DEPLOYED_REVISION"; }
+  [[ -f "$APP_PARENT/DEPLOYED_REVISION" ]] && { printf 'Last fully finalized revision: '; cat "$APP_PARENT/DEPLOYED_REVISION"; }
   print_access_hints
+}
+
+finalize_deployment_revision() {
+  # Only the wrapper reaches this point after BOTH Ansible verification and
+  # the additional host/runtime checks have succeeded. Never advertise an
+  # unsuccessful deployment as the current successful release.
+  [[ "$TARGET_REVISION" =~ ^[0-9a-fA-F]{40}$ ]] || {
+    error "Cannot finalize a release without an immutable SHA."; return 1;
+  }
+  local head marker temp
+  head=$(run_as_deploy_git rev-parse HEAD) || return 1
+  [[ "$head" == "$TARGET_REVISION" ]] || {
+    error "Release HEAD changed before finalization; refusing success marker."; return 1;
+  }
+  marker="$APP_PARENT/DEPLOYED_REVISION"
+  [[ ! -L "$marker" ]] || {
+    error "DEPLOYED_REVISION is an unsafe symlink."; return 1;
+  }
+  temp=$(mktemp "$APP_PARENT/.DEPLOYED_REVISION.XXXXXXXX") || return 1
+  chmod 0644 "$temp"
+  printf '%s\n' "$TARGET_REVISION" > "$temp" || { rm -f -- "$temp"; return 1; }
+  if ! chown "$DEPLOY_USER:$DEPLOY_GROUP" "$temp" || ! mv -fT -- "$temp" "$marker"; then
+    rm -f -- "$temp"
+    error "Could not atomically mark the fully verified release."; return 1
+  fi
+  ok "DEPLOYED_REVISION finalized after all verification: $TARGET_REVISION"
 }
 
 print_access_hints() {
@@ -2584,6 +2747,7 @@ main() {
     exit 0
   fi
 
+  acquire_deployment_lock
   ubuntu_preflight
   ensure_base_packages
   ensure_deploy_user
@@ -2592,20 +2756,29 @@ main() {
   ensure_deploy_key_and_alias
   info "Deploy-key verification returned successfully; proceeding to production checkout."
   ensure_repository
-  # Reload config from the checked-out source of truth before project-specific
-  # checks and deployment.
   load_project_config
+
+  if [[ "$MODE" == "deploy" || "$MODE" == "full" ]]; then
+    resolve_revision
+    if [[ "$BOOTSTRAP_REVISION" != "$TARGET_REVISION" ]]; then
+      bootstrap_selected_release
+      return $?
+    fi
+    precheckout_backup_and_checkout
+  fi
+
   check_reserved_ports
   ensure_ansible_controller
   ensure_local_inventory
   ensure_vault
   run_ansible_syntax_check
 
-  if [[ "$MODE" == "check" ]]; then ok "Preflight completed. No provision/deploy action requested."; exit 0; fi
+  if [[ "$MODE" == "check" ]]; then ok "Preflight completed. No provision/deploy action requested."; return 0; fi
   run_provision
-  if [[ "$MODE" == "provision" ]]; then ok "Provision-only run completed."; exit 0; fi
+  if [[ "$MODE" == "provision" ]]; then ok "Provision-only run completed."; return 0; fi
   run_deploy
   verify_deployment
+  finalize_deployment_revision
   ok "Sahabino production deployment flow completed."
   if [[ -f /var/run/reboot-required ]]; then
     warn "Host reboot is still pending. Schedule a controlled reboot and run --verify afterward."
