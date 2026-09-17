@@ -15,6 +15,7 @@ from sahabino.crawler.application.executor import CrawlerService
 from sahabino.crawler.application.policies.adapter import AdapterFallbackPolicy
 from sahabino.crawler.application.policies.network import NetworkPolicy
 from sahabino.crawler.application.policies.retry import RetryPolicy
+from sahabino.crawler.application.ports.adapter import PrimaryAdapterFactoryPort
 from sahabino.crawler.application.tasks import ApplicationCrawlCommand
 from sahabino.crawler.domain.dto import (
     AdapterCapabilities,
@@ -128,13 +129,14 @@ def _crawler(
     kafka_servers: str,
     applications: list[ApplicationRef],
     failed_review_package: str | None = None,
+    primary_factory: PrimaryAdapterFactoryPort | None = None,
 ) -> tuple[CrawlerService, KafkaCollectedEventPublisher]:
     lifecycle = SqlAlchemyLifecycleRepository(create_sync_session_factory(database_url))
     provider = NoProxyProvider()
     clock = SystemClock()
     playstore = ResilientPlayStoreClient(
         proxy_provider=provider,
-        primary_factory=FakePrimaryFactory(failed_review_package),
+        primary_factory=primary_factory or FakePrimaryFactory(failed_review_package),
         secondary_adapter=FakePlayStoreAdapter(),
         retry_policy=RetryPolicy(2, 1, clock=clock, random_value=lambda: 0),
         network_policy=NetworkPolicy(provider, rate_limit_rotate_after=2),

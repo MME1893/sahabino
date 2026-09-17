@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -10,14 +11,29 @@ from sahabino.crawler.domain.dto import (
     ReviewDTO,
     ReviewsDTO,
 )
-from sahabino.crawler.domain.errors import SchemaFailure
+from sahabino.crawler.domain.errors import ParseFailure, SchemaFailure
 from sahabino.crawler.infrastructure.adapters.common import (
+    ReviewRecord,
+    invalid_review_record,
+    normalize_review_batch,
     normalize_updated_on,
     validate_package,
 )
 
+logger = logging.getLogger(__name__)
+
+ADAPTER_NAME = "google-play-scraper"
+_REVIEW_FIELDS = frozenset({"reviewId", "userName", "score", "content", "thumbsUpCount"})
+_NORMALIZED_FIELD_NAMES = {
+    "reviewId": "external_review_id",
+    "userName": "author_name",
+    "score": "score",
+    "content": "content",
+    "thumbsUpCount": "thumbs_up_count",
+}
+
 AppFetcher = Callable[..., dict[str, Any]]
-ReviewFetcher = Callable[..., list[dict[str, Any]]]
+ReviewFetcher = Callable[..., list[ReviewRecord]]
 
 
 def _default_app_fetcher(**kwargs: Any) -> dict[str, Any]:
@@ -26,7 +42,7 @@ def _default_app_fetcher(**kwargs: Any) -> dict[str, Any]:
     return cast(dict[str, Any], app(**kwargs))
 
 
-def _default_review_fetcher(**kwargs: Any) -> list[dict[str, Any]]:
+def _default_review_fetcher(**kwargs: Any) -> list[ReviewRecord]:
     from google_play_scraper import Sort
     from google_play_scraper.constants.element import ElementSpecs
     from google_play_scraper.constants.request import Formats
@@ -37,11 +53,12 @@ def _default_review_fetcher(**kwargs: Any) -> list[dict[str, Any]]:
     country_code = str(kwargs["country"])
     count = int(kwargs["count"])
     url = Formats.Reviews.build(lang=language_code, country=country_code)
-    result: list[dict[str, Any]] = []
+    result: list[ReviewRecord] = []
     token: Any = None
+    seen_tokens: set[str] = set()
     while len(result) < count:
         fetch_count = min(count - len(result), MAX_COUNT_EACH_FETCH)
-        items, token = _fetch_review_items(
+        items, next_token = _fetch_review_items(
             url,
             app_id,
             Sort.NEWEST.value,
@@ -50,18 +67,34 @@ def _default_review_fetcher(**kwargs: Any) -> list[dict[str, Any]]:
             None,
             token,
         )
+        if not isinstance(items, list):
+            raise ParseFailure("secondary reviews parser returned an invalid page")
         for item in items[:fetch_count]:
-            raw = {
-                key: spec.extract_content(item)
-                for key, spec in ElementSpecs.Review.items()
-                if key not in {"at", "repliedAt"}
-            }
-            timestamp = item[5][0] if len(item) > 5 and item[5] else None
-            raw["at"] = datetime.fromtimestamp(timestamp, UTC) if timestamp is not None else None
-            result.append(raw)
-        if not items or not isinstance(token, str):
+            result.append(_extract_review_item(item, ElementSpecs.Review))
+        if not items or len(result) >= count or next_token is None:
             break
+        if not isinstance(next_token, str) or not next_token or next_token in seen_tokens:
+            raise ParseFailure("secondary reviews pagination token is invalid")
+        seen_tokens.add(next_token)
+        token = next_token
     return result
+
+
+def _extract_review_item(item: Any, specs: dict[str, Any]) -> ReviewRecord:
+    raw: dict[str, Any] = {}
+    for key, spec in specs.items():
+        if key not in _REVIEW_FIELDS:
+            continue
+        try:
+            raw[key] = spec.extract_content(item)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as error:
+            return invalid_review_record(_NORMALIZED_FIELD_NAMES[key], error)
+    try:
+        timestamp = item[5][0] if len(item) > 5 and item[5] else None
+        raw["at"] = datetime.fromtimestamp(timestamp, UTC) if timestamp is not None else None
+    except (IndexError, KeyError, TypeError, ValueError, OverflowError, OSError) as error:
+        return invalid_review_record("source_at", error)
+    return raw
 
 
 class GooglePlayScraperAdapter:
@@ -122,12 +155,18 @@ class GooglePlayScraperAdapter:
             country=country_code,
             count=effective_limit,
         )
+        if not isinstance(raw_reviews, list):
+            raise ParseFailure("secondary reviews parser returned an invalid response set")
         observed_at = self._now()
-        return ReviewsDTO(
-            reviews=tuple(
-                self._normalize_review(raw, position, observed_at)
-                for position, raw in enumerate(raw_reviews[:effective_limit], start=1)
-            )
+        return normalize_review_batch(
+            raw_reviews,
+            package_name=package_name,
+            adapter_name=ADAPTER_NAME,
+            requested_count=limit,
+            effective_limit=effective_limit,
+            observed_at=observed_at,
+            normalize=self._normalize_review,
+            logger=logger,
         )
 
     def close(self) -> None:
@@ -154,6 +193,6 @@ class GooglePlayScraperAdapter:
                 "content": raw.get("content"),
                 "position": position,
                 "observed_at": observed_at,
-                "source_adapter": "google-play-scraper",
+                "source_adapter": ADAPTER_NAME,
             }
         )

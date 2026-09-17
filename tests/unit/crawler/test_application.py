@@ -37,6 +37,8 @@ from sahabino.crawler.domain.errors import (
 )
 from sahabino.crawler.domain.results import CrawlTaskStatus, CrawlTaskType
 from sahabino.crawler.infrastructure.adapters.classifier import ErrorClassifier
+from sahabino.crawler.infrastructure.adapters.google_play import GooglePlayScraperAdapter
+from sahabino.crawler.infrastructure.messaging.kafka import KafkaCollectedEventPublisher
 from sahabino.crawler.infrastructure.proxy.models import ProxyState
 from sahabino.crawler.infrastructure.proxy.pool import ProxyPool
 from sahabino.crawler.infrastructure.proxy.providers import NoProxyProvider, PoolProxyProvider
@@ -44,6 +46,7 @@ from sahabino.crawler.infrastructure.resilience.circuit_breaker import (
     CircuitBreaker,
     CircuitState,
 )
+from sahabino.messaging.exceptions import ProducerDeliveryError
 
 from .fakes import FakeClock
 
@@ -202,6 +205,7 @@ class FakePublisher:
         self.fail = fail
         self.app_events = 0
         self.review_events = 0
+        self.published_reviews: ReviewsDTO | None = None
 
     def publish_app_stats(self, **_: object) -> None:
         if self.fail == "app":
@@ -210,9 +214,12 @@ class FakePublisher:
             raise RuntimeError("publisher programming failure")
         self.app_events += 1
 
-    def publish_reviews(self, **_: object) -> None:
+    def publish_reviews(self, **kwargs: object) -> None:
         if self.fail == "reviews":
             raise MessagingPublishFailure("review publish failed")
+        published = kwargs.get("reviews")
+        assert isinstance(published, ReviewsDTO)
+        self.published_reviews = published
         self.review_events += 1
 
     def close(self) -> None:
@@ -534,6 +541,76 @@ def test_reviews_failure_preserves_details_success() -> None:
     assert lifecycle.tasks[review_id]["status"] == CrawlTaskStatus.FAILED
 
 
+def test_review_schema_failure_uses_secondary_fallback() -> None:
+    secondary = FakeAdapter(review_outcomes=[reviews("secondary")])
+    primary = FakeAdapter(review_outcomes=[SchemaFailure("primary review schema changed")])
+    publisher = FakePublisher()
+    command, lifecycle, _, _ = _command(
+        primary,
+        secondary=secondary,
+        publisher=publisher,
+    )
+
+    _execute(command)
+
+    review_id = command.task_ids[CrawlTaskType.REVIEWS]  # type: ignore[attr-defined]
+    assert lifecycle.tasks[review_id]["status"] == CrawlTaskStatus.SUCCEEDED
+    assert lifecycle.tasks[review_id]["attempts"] == 2
+    assert secondary.review_calls == 1
+    assert publisher.published_reviews == reviews("secondary")
+
+
+def test_valid_reviews_after_one_malformed_item_are_published_and_task_succeeds() -> None:
+    raw_reviews = [
+        {
+            "reviewId": f"review-{index}",
+            "userName": "Ada",
+            "score": 5,
+            "content": "Useful",
+            "at": NOW,
+            "thumbsUpCount": 0,
+        }
+        for index in range(100)
+    ]
+    raw_reviews.append(
+        {
+            "reviewId": "malformed",
+            "userName": "Private Author",
+            "score": 5,
+            "content": None,
+            "at": NOW,
+            "thumbsUpCount": 0,
+        }
+    )
+    primary = GooglePlayScraperAdapter(
+        app_fetcher=lambda **_: {
+            "minInstalls": 100,
+            "score": 4.5,
+            "ratings": 90,
+            "reviews": 40,
+            "updated": None,
+            "version": "1.0",
+            "adSupported": False,
+        },
+        review_fetcher=lambda **_: raw_reviews,
+        now=lambda: NOW,
+    )
+    publisher = FakePublisher()
+    command, lifecycle, _, secondary = _command(  # type: ignore[arg-type]
+        primary,  # type: ignore[arg-type]
+        publisher=publisher,
+    )
+
+    _execute(command)
+
+    review_id = command.task_ids[CrawlTaskType.REVIEWS]  # type: ignore[attr-defined]
+    assert lifecycle.tasks[review_id]["status"] == CrawlTaskStatus.SUCCEEDED
+    assert lifecycle.tasks[review_id]["attempts"] == 1
+    assert publisher.published_reviews is not None
+    assert len(publisher.published_reviews.reviews) == 100
+    assert secondary.review_calls == 0
+
+
 def test_parse_failure_uses_secondary_but_429_never_does() -> None:
     secondary = FakeAdapter()
     parse_primary = FakeAdapter(app_outcomes=[ParseFailure("parse")])
@@ -842,6 +919,35 @@ def test_kafka_failure_marks_corresponding_task_failed(failure: str) -> None:
     task_id = command.task_ids[task_type]  # type: ignore[attr-defined]
     assert lifecycle.tasks[task_id]["status"] == CrawlTaskStatus.FAILED
     assert lifecycle.tasks[task_id]["error"][0] == "KAFKA_PUBLISH_FAILED"
+
+
+def test_real_kafka_publisher_review_delivery_failure_fails_review_task() -> None:
+    class ReviewFailingProducer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def publish_batch(self, messages: object) -> None:
+            tuple(messages)  # type: ignore[arg-type]
+            self.calls += 1
+            if self.calls == 2:
+                raise ProducerDeliveryError(["review delivery callback failed"])
+
+        def close(self) -> None:
+            return
+
+    publisher = KafkaCollectedEventPublisher(ReviewFailingProducer())  # type: ignore[arg-type]
+    command, lifecycle, _, _ = _command(  # type: ignore[arg-type]
+        FakeAdapter(),
+        publisher=publisher,  # type: ignore[arg-type]
+    )
+
+    _execute(command)
+
+    app_id = command.task_ids[CrawlTaskType.APP_DETAILS]  # type: ignore[attr-defined]
+    review_id = command.task_ids[CrawlTaskType.REVIEWS]  # type: ignore[attr-defined]
+    assert lifecycle.tasks[app_id]["status"] == CrawlTaskStatus.SUCCEEDED
+    assert lifecycle.tasks[review_id]["status"] == CrawlTaskStatus.FAILED
+    assert lifecycle.tasks[review_id]["error"][0] == "KAFKA_PUBLISH_FAILED"
 
 
 def test_unexpected_application_error_is_visible_and_open_tasks_are_finalized() -> None:

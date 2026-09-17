@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from sahabino.crawler.domain.results import CrawlRunStatus, CrawlTaskStatus, TriggerType
+from sahabino.crawler.infrastructure.adapters.google_play import GooglePlayScraperAdapter
 from sahabino.crawler.infrastructure.persistence.models import CrawlRun, CrawlTask
 from sahabino.db.sync_session import create_sync_session_factory
 from sahabino.ingestion.models import (
@@ -28,6 +29,45 @@ from tests.integration.crawler.test_crawler_flow import NOW, _applications, _cra
 EXPECTED_EVENT_COUNT = 4
 POLL_DEADLINE_SECONDS = 30.0
 COMMITTED_OFFSET_OBSERVATION_SECONDS = 2.0
+
+
+class MalformedReviewPrimaryFactory:
+    def create(self, _context_id: str, _lease: object) -> GooglePlayScraperAdapter:
+        raw_reviews = [
+            {
+                "reviewId": f"review-{index}",
+                "userName": "Integration User",
+                "score": 5,
+                "content": "Useful",
+                "at": NOW,
+                "thumbsUpCount": 2,
+            }
+            for index in range(100)
+        ]
+        raw_reviews.insert(
+            50,
+            {
+                "reviewId": "malformed-review",
+                "userName": "Private Integration User",
+                "score": 5,
+                "content": None,
+                "at": NOW,
+                "thumbsUpCount": 2,
+            },
+        )
+        return GooglePlayScraperAdapter(
+            app_fetcher=lambda **_: {
+                "minInstalls": 100,
+                "score": 4.5,
+                "ratings": 90,
+                "reviews": 40,
+                "updated": None,
+                "version": "1.0",
+                "adSupported": False,
+            },
+            review_fetcher=lambda **_: raw_reviews,
+            now=lambda: NOW,
+        )
 
 
 def test_crawler_to_ingestion_full_flow(
@@ -181,3 +221,61 @@ def test_crawler_to_ingestion_full_flow(
                 pytest.fail("committed crawler event was delivered again to the same group")
     finally:
         resumed_consumer.close()
+
+
+def test_valid_reviews_are_ingested_after_one_malformed_source_item(
+    crawler_database_url: str,
+    crawler_kafka_bootstrap_servers: str,
+    crawler_topics: tuple[str, str],
+) -> None:
+    applications = _applications(crawler_database_url, count=1)
+    session_factory = create_sync_session_factory(crawler_database_url)
+    crawler, publisher = _crawler(
+        crawler_database_url,
+        crawler_kafka_bootstrap_servers,
+        applications,
+        primary_factory=MalformedReviewPrimaryFactory(),
+    )
+
+    try:
+        run_id = crawler.crawl_once(TriggerType.MANUAL)
+    finally:
+        publisher.close()
+
+    group_id = f"sahabino-malformed-review-{uuid4().hex}"
+    worker = IngestionWorker(
+        consumer=KafkaConsumer(
+            crawler_kafka_bootstrap_servers,
+            group_id=group_id,
+            topics=crawler_topics,
+        ),
+        session_factory=session_factory,
+        consumer_group=group_id,
+    )
+    processed = 0
+    deadline = time.monotonic() + POLL_DEADLINE_SECONDS
+    try:
+        while processed < 101 and time.monotonic() < deadline:
+            processed += int(worker.process_next(timeout=1.0))
+    finally:
+        worker.close()
+
+    assert processed == 101
+    with session_factory() as session:
+        run = session.get(CrawlRun, run_id)
+        review_task = session.scalars(
+            select(CrawlTask).where(
+                CrawlTask.crawl_run_id == run_id,
+                CrawlTask.task_type == "reviews",
+            )
+        ).one()
+        stored_reviews = session.scalars(select(Review)).all()
+        observations = session.scalars(select(ReviewObservation)).all()
+
+        assert run is not None
+        assert run.status == CrawlRunStatus.SUCCEEDED.value
+        assert review_task.status == CrawlTaskStatus.SUCCEEDED.value
+        assert review_task.attempt_count == 1
+        assert len(stored_reviews) == 100
+        assert len(observations) == 100
+        assert {observation.position for observation in observations} == (set(range(1, 102)) - {51})
