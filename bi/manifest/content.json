@@ -1,0 +1,1522 @@
+{
+  "schema_version": 1,
+  "metabase_version": "v0.63.18",
+  "database_name": "Sahabino BI Source",
+  "collections": [
+    {
+      "key": "root",
+      "name": "Sahabino BI",
+      "parent": null,
+      "description": "Managed by independent Sahabino BI synchronizer."
+    },
+    {
+      "key": "questions",
+      "name": "Questions",
+      "parent": "root",
+      "description": "Managed SQL Questions. Do not manually edit."
+    },
+    {
+      "key": "dashboards",
+      "name": "Dashboards",
+      "parent": "root",
+      "description": "Managed dashboards. Do not manually edit."
+    }
+  ],
+  "questions": [
+    {
+      "key": "q01",
+      "name": "Portfolio — app coverage",
+      "description": "One row per monitored non-fixture app; latest successful store snapshot, historic crawl locale, freshness and missing coverage. Scores preserve source precision.",
+      "sql": "questions/q01_portfolio_current.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q02",
+      "name": "Store — daily rating trend",
+      "description": "Last real successful snapshot per UTC day, app and crawl locale; raw 0–5 rating. Gaps are not interpolated.",
+      "sql": "questions/q02_store_rating_daily.sql",
+      "collection": "questions",
+      "display": "line",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.x_axis.title_text": "Observed UTC date",
+        "graph.y_axis.title_text": "Store rating (0–5 points)",
+        "graph.dimensions": [
+          "snapshot_day_utc"
+        ],
+        "graph.metrics": [
+          "store_score_0_to_5"
+        ]
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q03",
+      "name": "Store — category peer comparison",
+      "description": "Latest score vs primary-category peers on identical crawl locale and UTC date; one peer yields NULL benchmark. Current category assignment is not historical.",
+      "sql": "questions/q03_store_rating_vs_category.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q04",
+      "name": "Store — rating and review count changes",
+      "description": "Observed-to-observed cumulative store ratings/reviews count changes; negative corrections and missing days retained. Not install growth.",
+      "sql": "questions/q04_store_counts_growth.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {},
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q05",
+      "name": "Store — install threshold milestones",
+      "description": "Published minimum-install threshold milestones, never exact installs or daily install growth. Only actual observation dates.",
+      "sql": "questions/q05_install_milestones.sql",
+      "collection": "questions",
+      "display": "line",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.x_axis.title_text": "Observed UTC date",
+        "graph.y_axis.title_text": "Minimum installs threshold (not exact installs)",
+        "graph.dimensions": [
+          "snapshot_day_utc"
+        ],
+        "graph.metrics": [
+          "min_installs_threshold"
+        ]
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q06",
+      "name": "Executive — portfolio totals and freshness",
+      "description": "Product portfolio denominator, availability, newest/oldest per-app latest snapshot and freshness in hours. Missing snapshots counted, not zero-filled.",
+      "sql": "questions/q06_executive_summary.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q07",
+      "name": "Executive — primary-category overview",
+      "description": "Current primary-category app count, coverage and mean latest score; category taxonomy is current, not historical.",
+      "sql": "questions/q07_category_summary.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q08",
+      "name": "Store — observed rating changes",
+      "description": "Store rating change since previous observed daily endpoint, preserving all source precision and observation gaps; date filter applied after LAG.",
+      "sql": "questions/q08_store_rating_changes.sql",
+      "collection": "questions",
+      "display": "line",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.x_axis.title_text": "Observed UTC date",
+        "graph.y_axis.title_text": "Store rating change (points)",
+        "graph.dimensions": [
+          "snapshot_day_utc"
+        ],
+        "graph.metrics": [
+          "store_score_change_points"
+        ]
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q09",
+      "name": "Executive — investigation signals",
+      "description": "Latest real observed period investigation signals: no baseline, negative corrections, missing day gaps and nonzero rating change; no opaque score.",
+      "sql": "questions/q09_investigation.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q10",
+      "name": "Reviews — star distribution",
+      "description": "Star distribution (1–5) for unique reviews: latest observation per review at cutoff; start date is first encounter cohort.",
+      "sql": "questions/q10_review_star_distribution.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.x_axis.title_text": "Observed review stars (1–5)",
+        "graph.y_axis.title_text": "Unique sampled reviews",
+        "graph.dimensions": [
+          "review_stars_1_to_5"
+        ],
+        "graph.metrics": [
+          "unique_review_count"
+        ]
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q11",
+      "name": "Reviews — unique cohort and star shares",
+      "description": "Unique sampled review cohort: average stars and shares at 1–2/4–5 stars; freshness and sample size. Not store population.",
+      "sql": "questions/q11_review_cohort.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q12",
+      "name": "Reviews — actual score revisions",
+      "description": "Real changes between consecutive observed scores for same review, deterministically ordered; repeated identical observations are not revisions.",
+      "sql": "questions/q12_review_revisions.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.dimensions": [
+          "transition_day_utc"
+        ],
+        "graph.metrics": [
+          "score_revision_count",
+          "score_upgrade_count",
+          "score_downgrade_count"
+        ],
+        "graph.x_axis.title_text": "Score transition UTC date",
+        "graph.y_axis.title_text": "Observed unique review transitions (count)"
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q13",
+      "name": "Sentiment — processing coverage",
+      "description": "Latest-as-of-cutoff unique review processing coverage: pending/done/skipped/failed distinct; classified denominator excludes invalid or missing labels.",
+      "sql": "questions/q13_sentiment_coverage.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "sentiment"
+    },
+    {
+      "key": "q14",
+      "name": "Sentiment — classified distribution",
+      "description": "Positive/neutral/negative distribution over only successfully classified unique reviews; missing coverage is NOT 0% negative.",
+      "sql": "questions/q14_sentiment_distribution.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.y_axis.title_text": "Classified unique reviews (count)",
+        "graph.dimensions": [
+          "sentiment_label"
+        ],
+        "graph.metrics": [
+          "classified_unique_reviews_for_label"
+        ]
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "sentiment"
+    },
+    {
+      "key": "q15",
+      "name": "Sentiment — first-encounter trend",
+      "description": "Latest-as-of-cutoff review sentiment grouped by first encounter UTC day; classified coverage and negative share shown separately.",
+      "sql": "questions/q15_sentiment_trend.sql",
+      "collection": "questions",
+      "display": "line",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.y_axis.title_text": "Share of classified unique reviews (fraction)",
+        "graph.dimensions": [
+          "first_observed_day_utc"
+        ],
+        "graph.metrics": [
+          "negative_sentiment_share"
+        ]
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "sentiment"
+    },
+    {
+      "key": "q16",
+      "name": "Sentiment — inferred language distribution",
+      "description": "Successfully classified unique reviews by inferred sentiment language; distinct from crawl language and with per-language sample size.",
+      "sql": "questions/q16_sentiment_language.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.y_axis.title_text": "Classified unique reviews (count)",
+        "graph.dimensions": [
+          "sentiment_language",
+          "sentiment_label"
+        ],
+        "graph.metrics": [
+          "unique_classified_reviews"
+        ],
+        "graph.x_axis.title_text": "Inferred language / sentiment label"
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "sentiment"
+    },
+    {
+      "key": "q17",
+      "name": "Reviews vs sentiment — distinct measures",
+      "description": "Review star rating vs sentiment classification cross-tab; different measures, including explicit unclassified category.",
+      "sql": "questions/q17_stars_vs_sentiment.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false
+      },
+      "parameters": {
+        "application": "text",
+        "category": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "sentiment"
+    },
+    {
+      "key": "q18",
+      "name": "Store — Baham vs Pinno direct comparison",
+      "description": "Baham vs Pinno direct side-by-side on matching UTC days and historical crawl locales; independent of category benchmark safeguards.",
+      "sql": "questions/q18_baham_pinno_direct.sql",
+      "collection": "questions",
+      "display": "line",
+      "visualization_settings": {
+        "graph.show_values": false,
+        "graph.show_goal": false,
+        "graph.x_axis.title_text": "Matched observation UTC date",
+        "graph.y_axis.title_text": "Store rating (0–5 points)",
+        "graph.dimensions": [
+          "snapshot_day_utc"
+        ],
+        "graph.metrics": [
+          "baham_store_score_0_to_5",
+          "pinno_store_score_0_to_5"
+        ]
+      },
+      "parameters": {
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q19",
+      "name": "Store — ratings count change",
+      "description": "Published cumulative ratings count deltas between actual daily observations; negative corrections are preserved.",
+      "sql": "questions/q19_ratings_count_changes.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.dimensions": [
+          "snapshot_day_utc"
+        ],
+        "graph.metrics": [
+          "observed_ratings_count_change"
+        ],
+        "graph.x_axis.title_text": "Observed UTC day",
+        "graph.y_axis.title_text": "Observed ratings-count change (count)"
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q20",
+      "name": "Store — reviews count change",
+      "description": "Published cumulative reviews count deltas between actual daily observations; not the count of sampled review rows.",
+      "sql": "questions/q20_reviews_count_changes.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.dimensions": [
+          "snapshot_day_utc"
+        ],
+        "graph.metrics": [
+          "observed_reviews_count_change"
+        ],
+        "graph.x_axis.title_text": "Observed UTC day",
+        "graph.y_axis.title_text": "Observed reviews-count change (count)"
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q21",
+      "name": "Store — current install lower-bound milestone",
+      "description": "Latest minimum-install threshold per app and historic locale, not exact installs.",
+      "sql": "questions/q21_current_install_threshold.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.dimensions": [
+          "application_name"
+        ],
+        "graph.metrics": [
+          "min_installs_threshold"
+        ],
+        "graph.y_axis.title_text": "Published lower-bound install milestone (not exact installs)"
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q22",
+      "name": "Store — latest rating by application",
+      "description": "Latest store rating on 0–5 point scale, source precision retained; one per app and observed locale.",
+      "sql": "questions/q22_latest_rating.sql",
+      "collection": "questions",
+      "display": "bar",
+      "visualization_settings": {
+        "graph.dimensions": [
+          "application_name"
+        ],
+        "graph.metrics": [
+          "store_score_0_to_5"
+        ],
+        "graph.y_axis.title_text": "Store rating (0–5 points)"
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q23",
+      "name": "Reviews — newly encountered unique reviews daily",
+      "description": "Newly first-observed unique sampled reviews per UTC day, historical first-observation locale and app.",
+      "sql": "questions/q23_review_first_observed_daily.sql",
+      "collection": "questions",
+      "display": "line",
+      "visualization_settings": {
+        "graph.dimensions": [
+          "first_observed_day_utc"
+        ],
+        "graph.metrics": [
+          "newly_observed_unique_reviews"
+        ],
+        "graph.y_axis.title_text": "Unique sampled reviews first observed"
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "end_date": "date",
+        "language": "text",
+        "start_date": "date"
+      },
+      "capability": "base"
+    },
+    {
+      "key": "q24",
+      "name": "Reviews — sampling and crawl coverage",
+      "description": "Review task completion coverage and unique sampled reviews per actual crawl locale; not statistical store-wide coverage.",
+      "sql": "questions/q24_review_sampling_coverage.sql",
+      "collection": "questions",
+      "display": "table",
+      "visualization_settings": {
+        "graph.show_values": false
+      },
+      "parameters": {
+        "application": "text",
+        "country": "text",
+        "language": "text"
+      },
+      "capability": "base"
+    }
+  ],
+  "dashboards": [
+    {
+      "key": "executive",
+      "name": "Executive Portfolio",
+      "description": "Portfolio coverage, freshness, category context and explainable investigation signals; no invented composite score.",
+      "collection": "dashboards",
+      "capability": "base",
+      "filters": [
+        {
+          "key": "application",
+          "name": "Application package",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q06",
+              "tag": "application"
+            },
+            {
+              "question": "q01",
+              "tag": "application"
+            },
+            {
+              "question": "q07",
+              "tag": "application"
+            },
+            {
+              "question": "q09",
+              "tag": "application"
+            },
+            {
+              "question": "q08",
+              "tag": "application"
+            },
+            {
+              "question": "q22",
+              "tag": "application"
+            }
+          ]
+        },
+        {
+          "key": "category",
+          "name": "Current primary category",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q01",
+              "tag": "category"
+            },
+            {
+              "question": "q07",
+              "tag": "category"
+            }
+          ]
+        },
+        {
+          "key": "country",
+          "name": "Historical crawl country",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q06",
+              "tag": "country"
+            },
+            {
+              "question": "q01",
+              "tag": "country"
+            },
+            {
+              "question": "q07",
+              "tag": "country"
+            },
+            {
+              "question": "q09",
+              "tag": "country"
+            },
+            {
+              "question": "q08",
+              "tag": "country"
+            },
+            {
+              "question": "q22",
+              "tag": "country"
+            }
+          ]
+        },
+        {
+          "key": "language",
+          "name": "Historical crawl language",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q06",
+              "tag": "language"
+            },
+            {
+              "question": "q01",
+              "tag": "language"
+            },
+            {
+              "question": "q07",
+              "tag": "language"
+            },
+            {
+              "question": "q09",
+              "tag": "language"
+            },
+            {
+              "question": "q08",
+              "tag": "language"
+            },
+            {
+              "question": "q22",
+              "tag": "language"
+            }
+          ]
+        },
+        {
+          "key": "start_date",
+          "name": "Rating-change chart start (Q08 only, UTC)",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q08",
+              "tag": "start_date"
+            }
+          ]
+        },
+        {
+          "key": "end_date",
+          "name": "Rating-change chart end (Q08 only, UTC)",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q08",
+              "tag": "end_date"
+            }
+          ]
+        }
+      ],
+      "cards": [
+        {
+          "question": "q06",
+          "row": 0,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 3
+        },
+        {
+          "question": "q01",
+          "row": 3,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q07",
+          "row": 10,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 5
+        },
+        {
+          "question": "q09",
+          "row": 15,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q08",
+          "row": 22,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 6
+        },
+        {
+          "question": "q22",
+          "row": 28,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 6
+        }
+      ]
+    },
+    {
+      "key": "store",
+      "name": "Store Growth & Rating",
+      "description": "Observed Store ratings, cumulative count changes and minimum-install milestones. Missing dates not interpolated.",
+      "collection": "dashboards",
+      "capability": "base",
+      "filters": [
+        {
+          "key": "application",
+          "name": "Application package",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q02",
+              "tag": "application"
+            },
+            {
+              "question": "q01",
+              "tag": "application"
+            },
+            {
+              "question": "q03",
+              "tag": "application"
+            },
+            {
+              "question": "q04",
+              "tag": "application"
+            },
+            {
+              "question": "q08",
+              "tag": "application"
+            },
+            {
+              "question": "q05",
+              "tag": "application"
+            },
+            {
+              "question": "q19",
+              "tag": "application"
+            },
+            {
+              "question": "q20",
+              "tag": "application"
+            },
+            {
+              "question": "q21",
+              "tag": "application"
+            },
+            {
+              "question": "q22",
+              "tag": "application"
+            }
+          ]
+        },
+        {
+          "key": "category",
+          "name": "Current primary category",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q01",
+              "tag": "category"
+            },
+            {
+              "question": "q03",
+              "tag": "category"
+            }
+          ]
+        },
+        {
+          "key": "country",
+          "name": "Historical crawl country",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q02",
+              "tag": "country"
+            },
+            {
+              "question": "q01",
+              "tag": "country"
+            },
+            {
+              "question": "q03",
+              "tag": "country"
+            },
+            {
+              "question": "q04",
+              "tag": "country"
+            },
+            {
+              "question": "q08",
+              "tag": "country"
+            },
+            {
+              "question": "q05",
+              "tag": "country"
+            },
+            {
+              "question": "q18",
+              "tag": "country"
+            },
+            {
+              "question": "q19",
+              "tag": "country"
+            },
+            {
+              "question": "q20",
+              "tag": "country"
+            },
+            {
+              "question": "q21",
+              "tag": "country"
+            },
+            {
+              "question": "q22",
+              "tag": "country"
+            }
+          ]
+        },
+        {
+          "key": "language",
+          "name": "Historical crawl language",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q02",
+              "tag": "language"
+            },
+            {
+              "question": "q01",
+              "tag": "language"
+            },
+            {
+              "question": "q03",
+              "tag": "language"
+            },
+            {
+              "question": "q04",
+              "tag": "language"
+            },
+            {
+              "question": "q08",
+              "tag": "language"
+            },
+            {
+              "question": "q05",
+              "tag": "language"
+            },
+            {
+              "question": "q18",
+              "tag": "language"
+            },
+            {
+              "question": "q19",
+              "tag": "language"
+            },
+            {
+              "question": "q20",
+              "tag": "language"
+            },
+            {
+              "question": "q21",
+              "tag": "language"
+            },
+            {
+              "question": "q22",
+              "tag": "language"
+            }
+          ]
+        },
+        {
+          "key": "start_date",
+          "name": "Observed trend/delta start (UTC; mapped cards only)",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q02",
+              "tag": "start_date"
+            },
+            {
+              "question": "q04",
+              "tag": "start_date"
+            },
+            {
+              "question": "q08",
+              "tag": "start_date"
+            },
+            {
+              "question": "q05",
+              "tag": "start_date"
+            },
+            {
+              "question": "q18",
+              "tag": "start_date"
+            },
+            {
+              "question": "q19",
+              "tag": "start_date"
+            },
+            {
+              "question": "q20",
+              "tag": "start_date"
+            }
+          ]
+        },
+        {
+          "key": "end_date",
+          "name": "Observed trend/delta end (UTC; mapped cards only)",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q02",
+              "tag": "end_date"
+            },
+            {
+              "question": "q04",
+              "tag": "end_date"
+            },
+            {
+              "question": "q08",
+              "tag": "end_date"
+            },
+            {
+              "question": "q05",
+              "tag": "end_date"
+            },
+            {
+              "question": "q18",
+              "tag": "end_date"
+            },
+            {
+              "question": "q19",
+              "tag": "end_date"
+            },
+            {
+              "question": "q20",
+              "tag": "end_date"
+            }
+          ]
+        }
+      ],
+      "cards": [
+        {
+          "question": "q02",
+          "row": 0,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q01",
+          "row": 7,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q03",
+          "row": 14,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q04",
+          "row": 21,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q08",
+          "row": 28,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q05",
+          "row": 35,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q18",
+          "row": 42,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q19",
+          "row": 49,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q20",
+          "row": 56,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q21",
+          "row": 63,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q22",
+          "row": 70,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        }
+      ]
+    },
+    {
+      "key": "reviews",
+      "name": "Review Intelligence",
+      "description": "Sampled unique-review star distribution, observed cohort shares and actual score transitions; no sentiment dependency.",
+      "collection": "dashboards",
+      "capability": "base",
+      "filters": [
+        {
+          "key": "application",
+          "name": "Application package",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q11",
+              "tag": "application"
+            },
+            {
+              "question": "q10",
+              "tag": "application"
+            },
+            {
+              "question": "q12",
+              "tag": "application"
+            },
+            {
+              "question": "q23",
+              "tag": "application"
+            },
+            {
+              "question": "q24",
+              "tag": "application"
+            }
+          ]
+        },
+        {
+          "key": "category",
+          "name": "Current primary category",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q11",
+              "tag": "category"
+            },
+            {
+              "question": "q10",
+              "tag": "category"
+            }
+          ]
+        },
+        {
+          "key": "country",
+          "name": "Historical crawl country",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q11",
+              "tag": "country"
+            },
+            {
+              "question": "q10",
+              "tag": "country"
+            },
+            {
+              "question": "q12",
+              "tag": "country"
+            },
+            {
+              "question": "q23",
+              "tag": "country"
+            },
+            {
+              "question": "q24",
+              "tag": "country"
+            }
+          ]
+        },
+        {
+          "key": "language",
+          "name": "Historical crawl language",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q11",
+              "tag": "language"
+            },
+            {
+              "question": "q10",
+              "tag": "language"
+            },
+            {
+              "question": "q12",
+              "tag": "language"
+            },
+            {
+              "question": "q23",
+              "tag": "language"
+            },
+            {
+              "question": "q24",
+              "tag": "language"
+            }
+          ]
+        },
+        {
+          "key": "start_date",
+          "name": "Cohort/observed start UTC",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q11",
+              "tag": "start_date"
+            },
+            {
+              "question": "q10",
+              "tag": "start_date"
+            },
+            {
+              "question": "q12",
+              "tag": "start_date"
+            },
+            {
+              "question": "q23",
+              "tag": "start_date"
+            }
+          ]
+        },
+        {
+          "key": "end_date",
+          "name": "As-of/observed end UTC",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q11",
+              "tag": "end_date"
+            },
+            {
+              "question": "q10",
+              "tag": "end_date"
+            },
+            {
+              "question": "q12",
+              "tag": "end_date"
+            },
+            {
+              "question": "q23",
+              "tag": "end_date"
+            }
+          ]
+        }
+      ],
+      "cards": [
+        {
+          "question": "q11",
+          "row": 0,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q10",
+          "row": 7,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q12",
+          "row": 14,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q23",
+          "row": 21,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q24",
+          "row": 28,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        }
+      ]
+    },
+    {
+      "key": "sentiment",
+      "name": "Sentiment Intelligence",
+      "description": "Optional, schema-gated: processing coverage and classifications of latest eligible unique reviews only.",
+      "collection": "dashboards",
+      "capability": "sentiment",
+      "filters": [
+        {
+          "key": "application",
+          "name": "Application package",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q13",
+              "tag": "application"
+            },
+            {
+              "question": "q14",
+              "tag": "application"
+            },
+            {
+              "question": "q15",
+              "tag": "application"
+            },
+            {
+              "question": "q16",
+              "tag": "application"
+            },
+            {
+              "question": "q17",
+              "tag": "application"
+            }
+          ]
+        },
+        {
+          "key": "category",
+          "name": "Current primary category",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q13",
+              "tag": "category"
+            },
+            {
+              "question": "q14",
+              "tag": "category"
+            },
+            {
+              "question": "q15",
+              "tag": "category"
+            },
+            {
+              "question": "q16",
+              "tag": "category"
+            },
+            {
+              "question": "q17",
+              "tag": "category"
+            }
+          ]
+        },
+        {
+          "key": "country",
+          "name": "Historical crawl country",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q13",
+              "tag": "country"
+            },
+            {
+              "question": "q14",
+              "tag": "country"
+            },
+            {
+              "question": "q15",
+              "tag": "country"
+            },
+            {
+              "question": "q16",
+              "tag": "country"
+            },
+            {
+              "question": "q17",
+              "tag": "country"
+            }
+          ]
+        },
+        {
+          "key": "language",
+          "name": "Historical crawl language",
+          "type": "string/=",
+          "mappings": [
+            {
+              "question": "q13",
+              "tag": "language"
+            },
+            {
+              "question": "q14",
+              "tag": "language"
+            },
+            {
+              "question": "q15",
+              "tag": "language"
+            },
+            {
+              "question": "q16",
+              "tag": "language"
+            },
+            {
+              "question": "q17",
+              "tag": "language"
+            }
+          ]
+        },
+        {
+          "key": "start_date",
+          "name": "First-encounter cohort starts (UTC)",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q13",
+              "tag": "start_date"
+            },
+            {
+              "question": "q14",
+              "tag": "start_date"
+            },
+            {
+              "question": "q15",
+              "tag": "start_date"
+            },
+            {
+              "question": "q16",
+              "tag": "start_date"
+            },
+            {
+              "question": "q17",
+              "tag": "start_date"
+            }
+          ]
+        },
+        {
+          "key": "end_date",
+          "name": "Latest observation cutoff (UTC)",
+          "type": "date/single",
+          "mappings": [
+            {
+              "question": "q13",
+              "tag": "end_date"
+            },
+            {
+              "question": "q14",
+              "tag": "end_date"
+            },
+            {
+              "question": "q15",
+              "tag": "end_date"
+            },
+            {
+              "question": "q16",
+              "tag": "end_date"
+            },
+            {
+              "question": "q17",
+              "tag": "end_date"
+            }
+          ]
+        }
+      ],
+      "cards": [
+        {
+          "question": "q13",
+          "row": 0,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q14",
+          "row": 7,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q15",
+          "row": 14,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q16",
+          "row": 21,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        },
+        {
+          "question": "q17",
+          "row": 28,
+          "col": 0,
+          "size_x": 12,
+          "size_y": 7
+        }
+      ]
+    }
+  ],
+  "deferred": [
+    {
+      "key": "network_benchmark",
+      "requires": "validated PCAP capture provenance, comparable network sampling, app mapping and units"
+    },
+    {
+      "key": "baham_pinno_network",
+      "requires": "comparable real network captures for both apps; Store-only direct comparison q18 is available"
+    },
+    {
+      "key": "telegram_whatsapp_network",
+      "requires": "same validated network capture windows and provenance"
+    },
+    {
+      "key": "store_network",
+      "requires": "matched locales/app IDs/capture windows and nonmissing network data"
+    },
+    {
+      "key": "release_impact",
+      "requires": "verified release dates, overlapping-release policy, sufficient before/after observed windows and coverage"
+    }
+  ]
+}

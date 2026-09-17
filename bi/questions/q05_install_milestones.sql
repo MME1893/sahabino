@@ -16,7 +16,11 @@ WITH eligible_snapshots AS (
        AND ct.application_id = s.application_id
     INNER JOIN public.applications AS a
         ON a.id = s.application_id
-    WHERE ct.task_type = 'app_details'
+    WHERE a.package_name <> 'ir.rightel.myrightel'
+      [[ AND a.package_name = {{application}} ]]
+      [[ AND ct.country_code = {{country}} ]]
+      [[ AND ct.language_code = {{language}} ]]
+      AND ct.task_type = 'app_details'
       AND ct.status = 'succeeded'
 ),
 ranked_daily AS (
@@ -89,6 +93,9 @@ SELECT
     previous_observation_day_utc,
     snapshot_day_utc - previous_observation_day_utc AS days_since_previous_observation
 FROM with_previous
+WHERE TRUE
+  [[ AND snapshot_day_utc >= {{start_date}} ]]
+  [[ AND snapshot_day_utc <= {{end_date}} ]]
 ORDER BY
     application_name,
     crawl_country_code,

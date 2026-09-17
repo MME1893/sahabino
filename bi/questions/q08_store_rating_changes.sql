@@ -46,25 +46,22 @@ ranked_daily AS (
         ) AS daily_rank
     FROM eligible_snapshots
 )
-SELECT
-    application_id,
-    application_name,
-    package_name,
-    crawl_country_code,
-    crawl_language_code,
-    snapshot_day_utc,
-    collected_at AS daily_last_collected_at,
-    score::numeric AS store_score_0_to_5,
-    ratings_count,
-    reviews_count,
-    source_adapter,
-    snapshots_in_day
-FROM ranked_daily
-WHERE daily_rank = 1
-  [[ AND snapshot_day_utc >= {{start_date}} ]]
-  [[ AND snapshot_day_utc <= {{end_date}} ]]
-ORDER BY
-    application_name,
-    crawl_country_code,
-    crawl_language_code,
-    snapshot_day_utc;
+, daily_last AS (
+ SELECT * FROM ranked_daily WHERE daily_rank=1
+), changes AS (
+ SELECT daily_last.*,
+ LAG(snapshot_day_utc) OVER w AS previous_observation_day_utc,
+ LAG(score) OVER w AS previous_store_score_0_to_5
+ FROM daily_last WINDOW w AS (PARTITION BY application_id,crawl_country_code,crawl_language_code
+ ORDER BY snapshot_day_utc)
+)
+SELECT application_id,application_name,package_name,crawl_country_code,crawl_language_code,
+ snapshot_day_utc,collected_at AS daily_last_collected_at,score::numeric AS store_score_0_to_5,
+ previous_store_score_0_to_5::numeric AS previous_store_score_0_to_5,
+ (score-previous_store_score_0_to_5)::numeric AS store_score_change_points,
+ previous_observation_day_utc,
+ snapshot_day_utc-previous_observation_day_utc AS days_since_previous_observation,
+ snapshots_in_day
+FROM changes WHERE TRUE
+ [[ AND snapshot_day_utc >= {{start_date}} ]] [[ AND snapshot_day_utc <= {{end_date}} ]]
+ORDER BY application_name,crawl_country_code,crawl_language_code,snapshot_day_utc;

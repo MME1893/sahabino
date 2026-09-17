@@ -20,12 +20,17 @@ WITH eligible_snapshots AS (
        AND ct.application_id = s.application_id
     INNER JOIN public.applications AS a
         ON a.id = s.application_id
-    LEFT JOIN public.application_categories AS ac
-        ON ac.application_id = a.id
-       AND ac.is_primary IS TRUE
+    LEFT JOIN LATERAL (
+        SELECT category_id FROM public.application_categories
+        WHERE application_id = a.id AND is_primary IS TRUE
+        ORDER BY category_id LIMIT 1
+    ) AS ac ON TRUE
     LEFT JOIN public.categories AS c
         ON c.id = ac.category_id
-    WHERE ct.task_type = 'app_details'
+    WHERE a.package_name <> 'ir.rightel.myrightel'
+      [[ AND ct.country_code = {{country}} ]]
+      [[ AND ct.language_code = {{language}} ]]
+      AND ct.task_type = 'app_details'
       AND ct.status = 'succeeded'
 ),
 ranked_latest AS (
@@ -52,16 +57,16 @@ SELECT
     focal.crawl_language_code,
     focal.snapshot_day_utc AS comparator_day_utc,
     focal.collected_at AS latest_collected_at,
-    ROUND(focal.score::numeric, 2) AS application_store_score_0_to_5,
+    focal.score::numeric AS application_store_score_0_to_5,
     peers.peer_app_count,
     CASE
         WHEN peers.peer_app_count >= 2
-            THEN ROUND(peers.raw_peer_median_score::numeric, 2)
+            THEN peers.raw_peer_median_score::numeric
         ELSE NULL
     END AS peer_median_score_0_to_5,
     CASE
         WHEN peers.peer_app_count >= 2
-            THEN ROUND((focal.score - peers.raw_peer_median_score)::numeric, 2)
+            THEN (focal.score - peers.raw_peer_median_score)::numeric
         ELSE NULL
     END AS score_minus_peer_median,
     CASE
@@ -87,6 +92,9 @@ CROSS JOIN LATERAL (
       AND peer.crawl_language_code = focal.crawl_language_code
       AND peer.snapshot_day_utc = focal.snapshot_day_utc
 ) AS peers
+WHERE TRUE
+  [[ AND focal.package_name = {{application}} ]]
+  [[ AND focal.primary_category_code = {{category}} ]]
 ORDER BY
     focal.primary_category_name,
     focal.application_name,

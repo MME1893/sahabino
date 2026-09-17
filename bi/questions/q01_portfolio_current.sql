@@ -11,12 +11,16 @@ WITH portfolio AS (
         c.code AS primary_category_code,
         c.name AS primary_category_name
     FROM public.applications AS a
-    LEFT JOIN public.application_categories AS ac
-        ON ac.application_id = a.id
-       AND ac.is_primary IS TRUE
+    LEFT JOIN LATERAL (
+        SELECT category_id FROM public.application_categories
+        WHERE application_id = a.id AND is_primary IS TRUE
+        ORDER BY category_id LIMIT 1
+    ) AS ac ON TRUE
     LEFT JOIN public.categories AS c
         ON c.id = ac.category_id
     WHERE a.package_name <> 'ir.rightel.myrightel'
+    [[ AND a.package_name = {{application}} ]]
+    [[ AND c.code = {{category}} ]]
 )
 SELECT
     p.application_id,
@@ -30,7 +34,7 @@ SELECT
     latest.crawl_country_code,
     latest.crawl_language_code,
     latest.collected_at AS latest_collected_at,
-    ROUND(latest.score::numeric, 2) AS latest_store_score_0_to_5,
+    latest.score::numeric AS latest_store_score_0_to_5,
     latest.ratings_count,
     latest.reviews_count,
     latest.min_installs AS min_installs_threshold,
@@ -70,6 +74,8 @@ LEFT JOIN LATERAL (
     WHERE s.application_id = p.application_id
       AND ct.task_type = 'app_details'
       AND ct.status = 'succeeded'
+      [[ AND ct.country_code = {{country}} ]]
+      [[ AND ct.language_code = {{language}} ]]
     ORDER BY s.collected_at DESC, s.id DESC
     LIMIT 1
 ) AS latest ON TRUE

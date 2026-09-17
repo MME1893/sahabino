@@ -61,43 +61,14 @@ with_previous AS (
         ORDER BY snapshot_day_utc
     )
 )
-SELECT
-    application_id,
-    application_name,
-    package_name,
-    crawl_country_code,
-    crawl_language_code,
-    snapshot_day_utc,
-    collected_at AS daily_last_collected_at,
-    snapshots_in_day,
-    ratings_count,
-    previous_ratings_count,
-    CASE
-        WHEN previous_ratings_count IS NULL THEN NULL
-        ELSE ratings_count - previous_ratings_count
-    END AS ratings_count_change,
-    CASE
-        WHEN previous_ratings_count IS NULL THEN NULL
-        ELSE ratings_count < previous_ratings_count
-    END AS ratings_count_negative_correction,
-    reviews_count,
-    previous_reviews_count,
-    CASE
-        WHEN previous_reviews_count IS NULL THEN NULL
-        ELSE reviews_count - previous_reviews_count
-    END AS reviews_count_change,
-    CASE
-        WHEN previous_reviews_count IS NULL THEN NULL
-        ELSE reviews_count < previous_reviews_count
-    END AS reviews_count_negative_correction,
-    previous_observation_day_utc,
-    snapshot_day_utc - previous_observation_day_utc AS days_since_previous_observation
-FROM with_previous
-WHERE TRUE
-  [[ AND snapshot_day_utc >= {{start_date}} ]]
-  [[ AND snapshot_day_utc <= {{end_date}} ]]
-ORDER BY
-    application_name,
-    crawl_country_code,
-    crawl_language_code,
-    snapshot_day_utc;
+SELECT application_name,package_name,crawl_country_code,crawl_language_code,
+ snapshot_day_utc,collected_at AS daily_last_collected_at,
+ ratings_count AS published_cumulative_ratings_count,
+ previous_ratings_count,
+ ratings_count-previous_ratings_count AS observed_ratings_count_change,
+ (ratings_count<previous_ratings_count) AS negative_correction,
+ snapshot_day_utc-previous_observation_day_utc AS days_since_previous_observation,
+ snapshots_in_day
+FROM with_previous WHERE TRUE
+ [[ AND snapshot_day_utc >= {{start_date}} ]] [[ AND snapshot_day_utc <= {{end_date}} ]]
+ORDER BY application_name,crawl_country_code,crawl_language_code,snapshot_day_utc;

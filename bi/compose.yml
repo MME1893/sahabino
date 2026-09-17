@@ -29,7 +29,7 @@ services:
         - >-
           curl --fail --silent --show-error
           http://127.0.0.1:3000/api/health
-          | grep --quiet 'ok'
+          | grep --extended-regexp --quiet '"status"[[:space:]]*:[[:space:]]*"ok"'
       interval: 30s
       timeout: 5s
       retries: 10

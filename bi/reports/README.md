@@ -1,167 +1,68 @@
-# Phase 1 report catalog
+# BI reporting catalog and semantic contract
 
-These are saved-question-ready PostgreSQL `SELECT` files. They query available history and do
-not create views or mutate source data. The readiness log described 89 snapshots per observed
-app across five UTC dates and no snapshots for MyRightel; that is context, not a completeness
-promise. None of the reports manufactures a seven-day window.
+**Implemented as version-controlled SQL and OSS Metabase manifest; NOT verified as deployed.** Files `../questions/q01_*.sql` through `q24_*.sql` are selected through `../manifest/content.json`. The actual Metabase data source must be named `Sahabino BI Source` and use the column-restricted reader. No raw personal review text, author, external review ID, full individual review record, inferred model version, made-up release/event, or PCAP data is surfaced. Historical crawl locale is always from the exact related `crawl_tasks` record. Category is the **current** primary registry category (no historical category table). MyRightel fixture `ir.rightel.myrightel` is excluded from every product-facing result **and peer cohort**, not deleted from source.
 
-All historical locale dimensions come from `crawl_tasks`, joined through
-`playstore_app_snapshots.crawl_task_id`. The locale on `applications` is shown only when it is
-explicitly labeled as the current registry locale.
+## Saved Questions (24)
 
-## Q01 — Executive portfolio: current store coverage
+| ID | Name / purpose | Grain and relevant context |
+| --- | --- | --- |
+| Q01 | Portfolio — app coverage | One product application, including missing snapshots; latest successful source observation, timestamp, age and current category. |
+| Q02 | Store — daily rating trend | App × crawl locale × actually observed UTC day; last observation in that day, raw 0–5 score, no fabricated dates. |
+| Q03 | Store — category peer comparison | App × locale, peers have same primary category, latest snapshot day and locale; **one peer is insufficient** and benchmark NULL. |
+| Q04 | Store — rating and review count changes | App × locale × UTC observed day; preceding actually observed day retained, separate signed cumulative-count deltas. |
+| Q05 | Store — install milestones | App × locale × observed day; `min_installs` is a reported **lower bound**, not exact installs or daily install growth. |
+| Q06 | Executive — portfolio summary | All non-fixture apps, present/missing store snapshot counts and latest data freshness. |
+| Q07 | Executive — category summary | Current primary category, app count, snapshot coverage and mean latest store score (NULL if no valid sample). |
+| Q08 | Store — observed rating changes | App × locale × day, last daily rating minus previous actual observation; no first-observation delta. |
+| Q09 | Executive — investigation signals | Most recent app/locale observation: explicit missing baseline, negative count correction, observation gap, or rating change; no composite quality/risk score. |
+| Q10 | Review — unique star distribution | Latest eligible observation per **unique review** at end cutoff; 1–5 star distribution by app and selected crawl locale. |
+| Q11 | Review — unique cohort KPIs | Unique review denominator, mean stars, shares of 1–2 and 4–5 stars, sample count and freshness. |
+| Q12 | Review — true star revisions | Consecutive observation transitions of one review: score changed (upgrade/downgrade), not repeated crawl records. |
+| Q13 | Sentiment — coverage and pipeline | One eligible observation per unique review, four separate statuses and valid classified coverage. **Optional.** |
+| Q14 | Sentiment — classified labels | Positive/neutral/negative distribution ONLY among `done` with valid labels. **Optional.** |
+| Q15 | Sentiment — first-observed cohort trend | Latest eligible review label at cutoff grouped by *first encounter day*, not daily inference events; NULL share on zero classified. **Optional.** |
+| Q16 | Sentiment — language breakdown | Classified sample and three-label share by `sentiment_language` (inferred language), distinct from crawl language. **Optional.** |
+| Q17 | Review stars × sentiment | Two different measures cross-tabulated only for classified unique reviews, never score-derived label. **Optional.** |
+| Q18 | Store — Baham versus Pinno | Real same-day, same historical crawl locale **store** score comparison; independent of insufficient category peer threshold. |
+| Q19 | Store — ratings count deltas | Signed cumulative store ratings-count changes with preceding observed baseline and gap size. |
+| Q20 | Store — reviews count deltas | Signed cumulative store reviews-count changes, **not unique crawled review count**. |
+| Q21 | Store — current install threshold | Latest reported `min_installs` lower bound by app and crawl locale. |
+| Q22 | Store — latest rating by application | Latest valid rating by application/locale; raw score and actual collection time. |
+| Q23 | Review — newly first observed per day | Earliest actual crawler observation per globally unique review, grouped by its original observation locale and `reviews.first_observed_at` UTC day. |
+| Q24 | Review — crawl/sample coverage | Review task success fraction, distinct sampled reviews and most recent sample timestamp, separately aggregated to avoid join fan-out. |
 
-- **Managerial question:** Which real monitored apps have current store metadata, and which
-  registry entries have no successful snapshot?
-- **Grain:** One application registry row.
-- **Source columns:** `applications.id/name/package_name/is_active/language_code/country_code`;
-  primary-only `application_categories.application_id/category_id/is_primary` and
-  `categories.id/code/name`; snapshot metadata and measures from
-  `playstore_app_snapshots`; actual locale and success state from `crawl_tasks`.
-- **Units:** Score is points on a 0–5 scale; counts are cumulative Google Play store totals;
-  `min_installs_threshold` is a Google Play lower-bound milestone; age is hours.
-- **Missing-data rules:** The application list is the left side of the query, so missing apps
-  remain with `NULL` snapshot fields and `snapshot_coverage_status='missing'`. A missing primary
-  category also remains `NULL`. Do not convert these values to zero.
-- **Fixture rule:** The query excludes exactly
-  `package_name='ir.rightel.myrightel'`, the deliberate MyRightel error fixture. It does not
-  delete or modify that row and applies no other package exclusion. With the supplied 16-row
-  seed this yields 15 real apps; separately registered non-fixture apps also appear.
-- **Recommended visualization:** Table with conditional formatting for coverage status and data
-  age; add single-number cards for available and missing counts by summarizing the saved question.
-- **Recommended filters:** Primary category, active status, coverage status, crawl country,
-  crawl language, and a clearly labeled freshness threshold.
-- **SQL:** [`../questions/q01_portfolio_current.sql`](../questions/q01_portfolio_current.sql)
+Every question has a descriptive manifest `description`, a stable logical `key`, a read-only SQL file and a visualization setting. Q04 is a table to avoid mixing unlike measures into a single falsely comparable chart. Charts have explicitly named date axes and units where used. Raw score precision is preserved in SQL; UI may format for readability. 15-product dashboard usability requires actual large-sample UI validation (not proven in this environment).
 
-## Q02 — Store rating: daily last observation
+## Four dashboard definitions
 
-- **Managerial question:** How has each app's store rating changed on each actually crawled
-  locale?
-- **Grain:** One application + crawl country + crawl language + UTC calendar date.
-- **Source columns:** Snapshot `id/application_id/crawl_task_id/collected_at/score/ratings_count/
-  reviews_count/source_adapter`; crawl task `id/application_id/task_type/status/country_code/
-  language_code`; application `id/name/package_name`.
-- **Units:** Score is points on a 0–5 scale; date is UTC; counts are cumulative store totals;
-  `snapshots_in_day` is source coverage.
-- **Selection rule:** `ROW_NUMBER()` chooses the latest successful `app_details` snapshot by
-  `collected_at DESC, id DESC` inside each app/actual-locale/UTC-day partition. The final display
-  rounds only after selection; no aggregation is rounded early.
-- **Missing-data rules:** Only dates with a real successful snapshot exist. Missing days are not
-  generated or interpolated. A locale is never filled from today's application registry.
-- **Recommended visualization:** Multi-series line chart with UTC day on X, score on Y, and a
-  required app/locale series break. Show points and tooltips containing collection time and
-  `snapshots_in_day`.
-- **Recommended filters:** App, crawl country, crawl language, and UTC date range. Start with
-  “all available history.”
-- **SQL:** [`../questions/q02_store_rating_daily.sql`](../questions/q02_store_rating_daily.sql)
+**Executive Portfolio:** 6 compact cards covering totals and missing snapshot coverage (Q06), snapshot inventory (Q01), latest ratings (Q22), category summary (Q07), recent changes (Q08), explicit investigation signals (Q09). Present missing data and all actual timeframe/age fields. No aggregate quality or risk score.
 
-## Q03 — Latest rating versus same-date category peers
+**Store Growth & Rating:** 11 cards: Q02/Q22/Q03/Q04/Q05/Q18/Q08/Q19/Q20/Q21 and Q01 for detailed diagnostics. Observed history only, all originally available history by default. Ratings/reviews **published cumulative counts** and their signed changes are never described as installs. A day gap is visible; no seven/28-day period is manufactured.
 
-- **Managerial question:** How does an app's latest score compare with primary-category peers
-  observed in the same locale on the same UTC date?
-- **Grain:** One application + crawl country + crawl language, at that app/locale's latest
-  successful snapshot.
-- **Source columns:** Q02 snapshot/task/application columns plus primary-only category assignment
-  and category `id/code/name`.
-- **Units:** Scores and score differences are points on a 0–5 scale; age is hours; peer count is
-  the number of distinct *other* applications.
-- **Comparator time rule:** Each app/locale first selects its own latest successful snapshot.
-  Eligible peers are primary-category apps whose own latest snapshot has the identical crawl
-  country, crawl language, and UTC date. This is a same-date cross-section, not a causal or
-  longitudinal benchmark. Category assignments come from the current registry because the schema
-  has no category-assignment history; the report must not imply that today's primary category was
-  necessarily assigned on the snapshot date.
-- **Small-sample rule:** The focal app is excluded from the peer set. One peer means the category
-  has only two observed apps, so `peer_median_score_0_to_5` and the difference are returned as
-  `NULL` with `peer_benchmark_status='insufficient_one_peer'`. Two peers are explicitly labeled
-  `limited_two_peer_sample`; three or more are labeled `three_plus_peers`. Always display
-  `peer_app_count` and status beside the median.
-- **Missing-data rules:** No primary category, no same-date peers, or an insufficient peer sample
-  produces an explicit status and a `NULL` benchmark. It never falls back to another date or
-  locale.
-- **Recommended visualization:** Dot plot or comparison table showing app score, peer median,
-  peer count, comparator date, status, and data age. Never hide the peer-count/status fields.
-- **Recommended filters:** Primary category, app, crawl country, crawl language, comparator UTC
-  date, and benchmark status.
-- **SQL:** [`../questions/q03_store_rating_vs_category.sql`](../questions/q03_store_rating_vs_category.sql)
+**Review Intelligence:** 5 cards: Q10/Q11/Q12/Q23/Q24. Runs against base schema at Alembic 0006 with no Sentiment worker prerequisite.
 
-## Q04 — Store rating/review count changes
+**Sentiment Intelligence (conditional):** 5 cards: Q13–Q17. Separate dashboard prevents missing-column query errors from breaking Review. It is provisioned only when the exact three observation sentiment columns, grants and at least one valid `done` label are detected. An app without classification may have status/coverage in Q13 but no Q14 distribution row; **no 0% negative rate is inferred**. If sentiment was enabled and later removed from the source, managed objects are not auto-deleted; operator must restrict/hide the stale dashboard until restored.
 
-- **Managerial question:** How did cumulative Google Play rating and review totals change between
-  observed daily endpoints?
-- **Grain:** One application + actual crawl locale + observed UTC day, after deterministic daily
-  last selection.
-- **Source columns:** Snapshot `id/application_id/crawl_task_id/collected_at/ratings_count/
-  reviews_count`; actual locale and success state from `crawl_tasks`; application identity.
-- **Units:** Counts and changes are Google Play cumulative totals, not sampled crawler review-row
-  counts. `days_since_previous_observation` is UTC calendar days.
-- **Change rule:** `LAG()` is partitioned by app and actual crawl locale. The first observation
-  has `NULL` previous values and changes. Negative deltas remain negative and have dedicated
-  correction flags; they are never clamped to zero.
-- **Naming rule:** `ratings_count_change` is not install growth. `reviews_count` is the store's
-  published cumulative count and must not be confused with the crawler's sampled review rows.
-- **Missing-data rules:** No rows are generated for missing days. A multi-day gap remains one
-  observed-to-observed change and is exposed by `days_since_previous_observation`.
-- **Recommended visualization:** Two small-multiple bar charts for daily changes, with negative
-  bars highlighted, plus tooltip totals, observation gap, and source coverage.
-- **Recommended filters:** App, crawl country, crawl language, UTC date range, and negative
-  correction flag.
-- **SQL:** [`../questions/q04_store_counts_growth.sql`](../questions/q04_store_counts_growth.sql)
+Dashboard grids/positions and per-card template tag mappings live in the manifest. Application filters are package string equality; category is current primary, country and language relate to the historic crawl task; UTC date filters are connected **only** to questions with valid semantics. Q01/Q03/Q06/Q07/latest-state do not get misleading dates. Q04/Q05/Q08/Q09/Q12/Q19/Q20 compute previous observation BEFORE limiting the selected output date, preserving `LAG()` baselines. Q23 selects the globally original locale BEFORE applying locale filter. Category peers Q03 are computed BEFORE filtering the focal package. Optional native `{{tag}}` parameters are mapped as Metabase dashboard variables; field filters are not used on computed dates/CTE aliases because that would give incorrect semantics.
 
-## Q05 — Observed install milestones
+## Review semantics, denominators and timestamps
 
-- **Managerial question:** When did Google Play expose a different minimum-install threshold for
-  each app/locale?
-- **Grain:** One application + actual crawl locale + observed UTC day, after deterministic daily
-  last selection.
-- **Source columns:** Snapshot `id/application_id/crawl_task_id/collected_at/min_installs`; actual
-  locale and success state from `crawl_tasks`; application identity.
-- **Units:** `min_installs_threshold` is a lower-bound milestone, not an exact installation count.
-  Threshold changes use the same units.
-- **Milestone rule:** Every real observed day remains so a step chart stays flat when the
-  threshold is unchanged. `newly_observed_higher_threshold` is populated only for the first
-  observation or a higher threshold. A lower correction is retained and flagged rather than
-  rewritten.
-- **Missing-data rules:** Missing calendar dates are not generated. Do not interpolate between
-  thresholds or infer installs inside a step. All available observed history is returned.
-- **Recommended visualization:** Step-after line chart with points only on observed dates;
-  disable smoothing/interpolation. Use status to annotate higher milestones and lower revisions.
-- **Recommended filters:** App, crawl country, crawl language, UTC date range, and threshold
-  observation status.
-- **SQL:** [`../questions/q05_install_milestones.sql`](../questions/q05_install_milestones.sql)
+- `reviews.id` is the stable *internal* unique review key; `review_observations` primary key is (`crawl_task_id`, `review_id`) and records **versions**, not separate reviews. Manager queries never emit this identity. Each latest-state/cohort Review or Sentiment metric chooses **one last eligible observation per unique review** using `(observed_at DESC, crawl_task_id DESC)`, as known up to **inclusive** `end_date` (UTC date); score and sentiment are taken from that observation, never mutable `reviews.score`.
+- `source_at` represents purported original source publication time, reliability may vary and it is NOT used for cohort denominators. `observed_at` is crawler's version observation timestamp. `reviews.first_observed_at` is Sahabino's first encounter, not a new review publication or a unique person's lifetime review. Q23 independently ranks original observed versions and preserves its original crawl locale.
+- `start_date`: Review/Sentiment cohort includes reviews first encountered on or after that UTC date; `end_date`: last eligible observed version on or before cutoff. Locale filters restrict observation eligibility **before** choosing the last version: a review seen in several locales appears once per filtered locale cohort, and unfiltered global grouping assigns it only to its latest eligible locale. **Never sum locale-filtered report totals as globally distinct reviews.** Historical score under a cutoff comes from that cutoff's observation.
+- Q10 distribution denominator = count of distinct eligible reviews with stars 1–5. Q11 **mean** = sum of selected observed stars / eligible unique count; negative review share = count of selected scores 1–2 / eligible count; positive review share = count of scores 4–5 / eligible count; neutral star 3 participates in denominator but neither numerator. An empty cohort produces no application row or NULL aggregate, never a fabricated zero ratio. Sample represents crawled results, NOT the entire store's population.
+- Q12 sorts *all* eligible versions of a review by `(observed_at, crawl_task_id)` before `LAG(score)`, counts only `score<>previous_score`, and classifies `>` upgrades, `<` downgrades. Date and locale filters are applied **after** forming actual global consecutive transitions: the transition is attributed to the newly observed version's crawl locale. No current review score reconstructs history. Q23 counts one global earliest observation per review, including original locale; Q24 independently aggregates crawl tasks and unique review sample, then joins summaries only.
 
-## Dashboard navigation and deferred work
+## Sentiment semantics and missingness
 
-Recommend these five top-level destinations in Metabase:
+Q13–Q17 require real 0007/0008-derived schema; current production revision last reported as 0006, **not verified changed**. The ingestion/worker contract stores sentiment status, label and language on `review_observations`, may reuse analysis for identical content and can record a different label for a revised review. There is no persisted reliable model-version provenance. These reports deliberately measure **latest-known review-level sentiment at observation cutoff**, NOT independent sentiment-event frequency or distinct review-version prevalence; one eligible observation per review, not number of `done` rows.
 
-1. **Executive Portfolio** — Phase 1: Q01 and freshness/coverage cards.
-2. **Store Growth & Rating** — Phase 1: Q02–Q05.
-3. **Review Intelligence** — deferred.
-4. **Network/Application Comparison** — deferred.
-5. **Release Impact** — deferred.
+- Pipeline statuses: `pending`, `done`, `skipped`, `failed` counts in Q13 use latest eligible observation for each distinct review. `done` with null/invalid label is **not** a classified result. Coverage = count(`done` AND label ∈ {positive,neutral,negative}) / all eligible unique reviews. Historic migration `skipped` stays missing and is never recoded as neutral or negative.
+- Q14 share for each label = unique classified reviews with that label / *only* unique `done` reviews with a valid label (within the same app/locale cohort). Negative sentiment share is the same valid denominator with label negative; Q15 shows this share by *first-observed date cohort*, with `NULL` if classified denominator zero. Shares are not scaled to percentage points in SQL; a UI percentage format may multiply by 100 **for display**.
+- Q16 groups valid classified reviews by inferred `sentiment_language`; its sample size is explicitly given per inferred language. `crawl_language_code` reflects requested crawler locale, not inferred text language; `sentiment_language` is **not** the same as country or category. Q17 displays review stars and independently predicted label together without substituting one for the other. Status coverage/sample size must accompany distributions; no model accuracy, topic/network complaint, or inferred model version is claimed. Changing text and labels between observations can alter historical-as-of labels; no historical inference claim without matching snapshot exists.
 
-Only the first two are built from this phase's SQL. No dashboard object is serialized here;
-create saved questions and dashboards through the authorized Metabase UI after runtime and
-read-only behavior are verified.
+## Verification, missing data and pending dashboards
 
-### Deferred Review Intelligence specification
+See [`../README.md`](../README.md) for test/deployment commands and [`../tests/README.md`](../tests/README.md) for disposable schema coverage. Verify direct PostgreSQL results **as reader**, not only as administrator: sample raw-count corrections, one-peer insufficient benchmark, cross-category dedup, multi-day missing gaps, score revision 1→1→4, review distinct denominators, sentiment skipped/done and denial of all sensitive columns. Compare chart dates, lines, filters, descriptions and actual API dashboard-card IDs in a disposable Metabase first. No actual production dashboard, SQL query result or screenshot has been verified here.
 
-Prerequisites: production revision and schema must be verified at or beyond the sentiment
-migrations; observation-level `content`, `source_at`, status, language, and label coverage must be
-measured; worker retry/failure behavior must be understood; privacy review must explicitly decide
-whether any content can be exposed. Grant only newly approved aggregate columns. Never expose raw
-review author or content by default, and never treat a crawler sample as all store reviews.
-
-### Deferred Release Impact specification
-
-Prerequisites: verified release/version transitions, stable pre/post windows with locale and data
-coverage, and production-verified observation timestamps/sentiment. Report association only;
-do not claim a release caused a rating or sentiment change. Define overlapping releases and
-missing-window behavior before writing SQL.
-
-### Deferred Network/Application Comparison specification
-
-Prerequisites: real PCAP-derived rows, capture and application metadata linkage, unit definitions,
-sampling boundaries, and metric-level coverage checks. Define how missing captures differ from
-zero traffic. Do not build this report from dummy data or before real capture provenance is
-validated.
+**Deferred contracts, not abandoned:** Network Benchmark needs verified PCAP metrics, capture attribution, consistent denominators, traffic and observation interval comparability; Baham/Pinno and Telegram/WhatsApp need matched network captures and clear baseline; Store × Network requires safe time/app/locale joins with separate aggregation; Release Impact Explorer requires trustworthy actual release timestamps, matching pre/post periods, observation coverage and attribution caveats. Q18 is only a Store comparison. Do not invent complaints from sentiment, release dates or PCAP observations. Manifest `deferred` records gate eventual future work; enabling these will require separate schema and acceptance tests without changing code outside `bi/` under this task.
