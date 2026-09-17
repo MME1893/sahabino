@@ -12,10 +12,12 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     SmallInteger,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -119,6 +121,26 @@ class ReviewObservation(Base):
         CheckConstraint("position >= 1 AND position <= 1000", name="position_range"),
         CheckConstraint("score >= 1 AND score <= 5", name="score_range"),
         CheckConstraint("thumbs_up_count >= 0", name="thumbs_up_count_non_negative"),
+        CheckConstraint(
+            "sentiment_status IN ('pending', 'done', 'skipped', 'failed')",
+            name="sentiment_status_valid",
+        ),
+        CheckConstraint(
+            "sentiment_label IS NULL OR sentiment_label IN ('positive', 'neutral', 'negative')",
+            name="sentiment_label_valid",
+        ),
+        Index(
+            "ix_review_observations_review_id",
+            "review_id",
+            unique=False,
+            postgresql_using="btree",
+        ),
+        Index(
+            "ix_review_observations_sentiment_pending",
+            "review_id",
+            "crawl_task_id",
+            postgresql_where=text("sentiment_status = 'pending'"),
+        ),
     )
 
     crawl_task_id: Mapped[UUID] = mapped_column(
@@ -134,3 +156,10 @@ class ReviewObservation(Base):
     score: Mapped[int] = mapped_column(SmallInteger)
     thumbs_up_count: Mapped[int] = mapped_column(BigInteger)
     source_adapter: Mapped[str] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text)
+    source_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sentiment_language: Mapped[str | None] = mapped_column(Text)
+    sentiment_label: Mapped[str | None] = mapped_column(Text)
+    sentiment_status: Mapped[str] = mapped_column(Text, server_default="pending")
+    sentiment_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sentiment_attempt_count: Mapped[int] = mapped_column(SmallInteger, server_default="0")

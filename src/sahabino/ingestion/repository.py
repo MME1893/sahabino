@@ -154,6 +154,8 @@ class IngestionRepository:
                 score=payload.score,
                 thumbs_up_count=payload.thumbs_up_count,
                 source_adapter=payload.source_adapter,
+                content=payload.content,
+                source_at=payload.source_at,
             )
             .on_conflict_do_nothing(
                 index_elements=[ReviewObservation.crawl_task_id, ReviewObservation.review_id]

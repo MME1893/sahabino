@@ -130,6 +130,12 @@ def test_ingestion_schema_and_migration_head(crawler_database_url: str) -> None:
     }
     assert len(schema.get_foreign_keys("playstore_app_snapshots")) == 2
     assert len(schema.get_foreign_keys("review_observations")) == 2
+    review_observation_indexes = {
+        index["name"]: index for index in schema.get_indexes("review_observations")
+    }
+    review_id_index = review_observation_indexes["ix_review_observations_review_id"]
+    assert review_id_index["column_names"] == ["review_id"]
+    assert review_id_index["unique"] is False
     assert len(schema.get_check_constraints("ingested_events")) == 3
     assert len(schema.get_check_constraints("playstore_app_snapshots")) == 4
     assert len(schema.get_check_constraints("reviews")) == 3
@@ -137,14 +143,16 @@ def test_ingestion_schema_and_migration_head(crawler_database_url: str) -> None:
         constraint["name"]: constraint["sqltext"]
         for constraint in schema.get_check_constraints("review_observations")
     }
-    assert len(review_observation_checks) == 3
+    assert len(review_observation_checks) == 5
     assert "1000" in review_observation_checks["ck_review_observations_position_range"]
+    assert "pending" in review_observation_checks["ck_review_observations_sentiment_status_valid"]
+    assert "positive" in review_observation_checks["ck_review_observations_sentiment_label_valid"]
 
     with engine.connect() as connection:
         assert connection.scalar(select(func.max(IngestedEvent.schema_version))) is None
         assert connection.exec_driver_sql(
             "SELECT version_num FROM alembic_version"
-        ).scalar_one() == ("20260916_0006")
+        ).scalar_one() == ("20260917_0008")
 
 
 def test_review_position_1000_is_ingested_into_postgresql(
@@ -168,6 +176,10 @@ def test_review_position_1000_is_ingested_into_postgresql(
     with factory() as session:
         observation = session.scalars(select(ReviewObservation)).one()
         assert observation.position == 1000
+        assert observation.content == "position one thousand"
+        assert observation.source_at == datetime(2026, 9, 11, 18, tzinfo=UTC)
+        assert observation.sentiment_status == "pending"
+        assert observation.sentiment_attempt_count == 0
 
 
 def test_app_snapshot_and_event_claim_are_idempotent(crawler_database_url: str) -> None:

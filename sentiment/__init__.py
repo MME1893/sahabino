@@ -1,0 +1,1 @@
+"""Standalone review sentiment worker."""
