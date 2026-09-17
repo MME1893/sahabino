@@ -24,7 +24,7 @@ def parse_group_state(output: str) -> tuple[str, int] | None:
 
 
 def _default_runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=False, capture_output=True, text=True, timeout=35)
+    return subprocess.run(command, check=False, capture_output=True, text=True, timeout=75)
 
 
 def wait_for_healthy_group(
@@ -42,7 +42,7 @@ def wait_for_healthy_group(
         try:
             result = runner(command)
         except subprocess.TimeoutExpired:
-            last_detail = "Kafka group command timed out after 35 seconds"
+            last_detail = "Kafka group command timed out after 75 seconds"
             if monotonic() >= deadline:
                 print(
                     f"Kafka analyzer consumer did not become healthy: {last_detail}",
@@ -105,7 +105,7 @@ def main(argv: list[str]) -> int:
             check=False,
             capture_output=True,
             text=True,
-            timeout=35,
+            timeout=75,
         )
 
     return (

@@ -206,9 +206,9 @@
     argv: >-
       {{ [
         'python3', sahabino_app_dir + '/deploy/ansible/tools/kafka_group_health.py',
-        '--timeout', '120', '--interval', '5', '--cwd', sahabino_app_dir, '--'
+        '--timeout', '180', '--interval', '5', '--cwd', sahabino_app_dir, '--'
       ] + sahabino_compose_cli + [
-        'exec', '-T', 'kafka', 'timeout', '20s',
+        'exec', '-T', 'kafka', 'timeout', '60s',
         '/opt/kafka/bin/kafka-consumer-groups.sh',
         '--bootstrap-server', 'localhost:19092', '--describe', '--state',
         '--group', sahabino_network_analyzer_consumer_group_id

@@ -2374,7 +2374,7 @@ wait_for_kafka_health() {
   local cid deadline status
   cid=$(compose ps -q kafka 2>/dev/null | head -n1 || true)
   [[ -n "$cid" ]] || { warn "Kafka container is not present."; return 1; }
-  deadline=$((SECONDS + 120))
+  deadline=$((SECONDS + 300))
   while (( SECONDS < deadline )); do
     status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || true)
     case "$status" in
@@ -2501,8 +2501,8 @@ storage._client.head_bucket(Bucket=storage._bucket)
   (
     cd "$APP_DIR"
     python3 deploy/ansible/tools/kafka_group_health.py \
-      --timeout 120 --interval 5 --cwd "$APP_DIR" -- \
-      "${command[@]}" exec -T kafka timeout 20s \
+      --timeout 180 --interval 5 --cwd "$APP_DIR" -- \
+      "${command[@]}" exec -T kafka timeout 60s \
       /opt/kafka/bin/kafka-consumer-groups.sh \
       --bootstrap-server "$KAFKA_BOOTSTRAP_INTERNAL" --describe --state \
       --group "$NETWORK_ANALYZER_CONSUMER_GROUP"
@@ -2658,8 +2658,8 @@ FROM crawl_tasks ct JOIN applications a ON a.id = ct.application_id
 WHERE ct.status <> '\''succeeded'\'' ORDER BY a.package_name, ct.task_type;
 "' || warn "Crawler task verification query failed."
 
-  info "Kafka ingestion consumer lag (20s timeout):"
-  compose exec -T kafka timeout 20s /opt/kafka/bin/kafka-consumer-groups.sh \
+  info "Kafka ingestion consumer lag (60s timeout):"
+  compose exec -T kafka timeout 60s /opt/kafka/bin/kafka-consumer-groups.sh \
     --bootstrap-server "$KAFKA_BOOTSTRAP_INTERNAL" --describe --group "$INGESTION_CONSUMER_GROUP" \
     || warn "Consumer-group describe timed out/failed."
 
