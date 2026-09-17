@@ -19,7 +19,7 @@ ASSISTANT = ROOT / "deploy" / "ansible" / "sahabino-deploy.sh"
 SEAWEED_WRAPPER = ROOT / "infrastructure" / "network" / "seaweedfs-entrypoint.sh"
 RELEASE_TASKS = ROOT / "deploy" / "ansible" / "roles" / "sahabino_deploy" / "tasks" / "release.yml"
 VERIFY_TASKS = ROOT / "deploy" / "ansible" / "roles" / "sahabino_deploy" / "tasks" / "verify.yml"
-CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "deployment-safety.yml"
 
 
 def _load(name: str) -> ModuleType:
@@ -153,12 +153,48 @@ class ComposeRunner:
 
 
 def test_crawler_drain_treats_missing_crawler_as_first_deploy() -> None:
-    runner = ComposeRunner(running=False)
+    runner = ComposeRunner(running=False, counts=[0])
     assert (
         crawler_drain.wait_for_drain(["compose"], timeout_seconds=0, poll_seconds=0, runner=runner)
         == crawler_drain.NO_CRAWLER
     )
-    assert runner.query_calls == 0
+    assert runner.query_calls == 1
+
+
+def test_missing_crawler_with_persisted_work_does_not_bypass_drain() -> None:
+    runner = ComposeRunner(running=False, counts=[2])
+    assert (
+        crawler_drain.wait_for_drain(["compose"], timeout_seconds=0, poll_seconds=0, runner=runner)
+        == 3
+    )
+    assert runner.query_calls == 1
+
+
+def test_missing_crawler_still_fails_closed_on_db_query_error() -> None:
+    runner = ComposeRunner(running=False, query_error=True)
+    with pytest.raises(crawler_drain.CrawlStateError, match="database query failed"):
+        crawler_drain.wait_for_drain(["compose"], timeout_seconds=0, poll_seconds=0, runner=runner)
+
+
+def test_inconsistent_crawler_schema_is_not_an_empty_queue() -> None:
+    runner = ComposeRunner(counts=[-1])
+    with pytest.raises(crawler_drain.CrawlStateError, match="schema is incomplete"):
+        crawler_drain.wait_for_drain(["compose"], timeout_seconds=0, poll_seconds=0, runner=runner)
+
+
+def test_crawler_database_query_handles_new_schema_and_incomplete_schema() -> None:
+    assert "to_regclass('public.crawl_runs')" in crawler_drain.SCHEMA_QUERY
+    assert "pg_catalog.pg_tables" in crawler_drain.SCHEMA_QUERY
+    assert 'case "$state"' in crawler_drain.QUERY_COMMAND
+
+
+def test_crawler_state_subprocess_timeout_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def hang(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired("docker", 35)
+
+    monkeypatch.setattr(crawler_drain.subprocess, "run", hang)
+    with pytest.raises(crawler_drain.CrawlStateError, match="timed out"):
+        crawler_drain.wait_for_drain(["docker", "compose"], timeout_seconds=600, poll_seconds=10)
 
 
 def test_crawler_drain_continues_immediately_without_active_run() -> None:
@@ -224,6 +260,102 @@ def test_crawler_final_race_check_honors_explicit_authorization() -> None:
         )
         == 0
     )
+
+
+def test_crawler_wait_cli_parses_flags_after_mode_before_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], float, float]] = []
+
+    def fake_wait(compose: Sequence[str], *, timeout_seconds: float, poll_seconds: float) -> int:
+        calls.append((list(compose), timeout_seconds, poll_seconds))
+        return crawler_drain.NO_CRAWLER
+
+    monkeypatch.setattr(crawler_drain, "wait_for_drain", fake_wait)
+    assert (
+        crawler_drain.main(
+            [
+                "crawler_drain.py",
+                "wait",
+                "--timeout",
+                "600",
+                "--poll",
+                "10",
+                "--",
+                "docker",
+                "compose",
+                "--project-name",
+                "sahabino",
+            ]
+        )
+        == crawler_drain.NO_CRAWLER
+    )
+    assert calls == [(["docker", "compose", "--project-name", "sahabino"], 600.0, 10.0)]
+
+
+def test_crawler_final_cli_passes_interruption_flag_not_as_compose_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_final(compose: Sequence[str], *, allow_active_interruption: bool) -> int:
+        calls.append((list(compose), allow_active_interruption))
+        return 0
+
+    monkeypatch.setattr(crawler_drain, "final_check", fake_final)
+    assert (
+        crawler_drain.main(
+            [
+                "crawler_drain.py",
+                "final",
+                "--allow-active-interruption",
+                "--",
+                "docker",
+                "compose",
+            ]
+        )
+        == 0
+    )
+    assert calls == [(["docker", "compose"], True)]
+
+
+def test_crawler_drain_refuses_missing_compose_separator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def never_run(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("no Docker command may be launched")
+
+    monkeypatch.setattr(crawler_drain, "wait_for_drain", never_run)
+    assert crawler_drain.main(["crawler_drain.py", "wait", "docker", "compose"]) == 2
+
+
+def test_crawler_drain_missing_executable_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("docker executable not found")
+
+    monkeypatch.setattr(crawler_drain.subprocess, "run", missing)
+    assert (
+        crawler_drain.main(
+            [
+                "crawler_drain.py",
+                "wait",
+                "--",
+                "docker",
+                "compose",
+            ]
+        )
+        == 2
+    )
+    assert "Unable to execute crawler-state command" in capsys.readouterr().err
+
+
+def test_crawler_drain_failure_assertion_reports_actual_command_error() -> None:
+    text = RELEASE_TASKS.read_text()
+    assert "sahabino_crawler_drain.stderr" in text
+    assert "Crawler-state verification failed" in text
+    assert "sahabino_crawler_drain.rc in [0, 3, 4]" in text
 
 
 def _seaweed_payload(access_key: str = "access", secret_key: str = "secret") -> dict[str, object]:
@@ -418,8 +550,9 @@ def test_assistant_mode_dispatch_does_not_cross_mode_boundaries(
         "setup_logging require_root_for_bootstrap ubuntu_preflight ensure_base_packages "
         "ensure_deploy_user discover_repository_url ensure_docker ensure_deploy_key_and_alias "
         "ensure_repository load_project_config check_reserved_ports ensure_ansible_controller "
-        "ensure_local_inventory ensure_vault run_ansible_syntax_check run_provision run_deploy "
-        "verify_deployment"
+        "acquire_deployment_lock resolve_revision bootstrap_selected_release "
+        "precheckout_backup_and_checkout ensure_local_inventory ensure_vault run_ansible_syntax_check run_provision run_deploy "
+        "verify_deployment finalize_deployment_revision"
     )
     result = _run_bash(
         f"""
@@ -449,7 +582,12 @@ main
         assert "run_deploy" not in invoked
         assert "verify_deployment" not in invoked
     else:
-        assert invoked[-3:] == ["run_provision", "run_deploy", "verify_deployment"]
+        assert invoked[-4:] == [
+            "run_provision",
+            "run_deploy",
+            "verify_deployment",
+            "finalize_deployment_revision",
+        ]
 
 
 @pytest.mark.parametrize(
@@ -530,10 +668,10 @@ def test_private_access_hints_include_a_valid_storage_forward() -> None:
         assert marker in result.stdout
 
 
-def test_early_seaweed_rollout_always_recreates_only_seaweed_before_drain() -> None:
+def test_early_seaweed_rollout_does_not_recreate_data_before_backup() -> None:
     release = RELEASE_TASKS.read_text(encoding="utf-8")
     start = release.index(
-        "- name: Start SeaweedFS before interrupting existing application workers"
+        "- name: Ensure SeaweedFS is running without recreating an existing data-bearing container"
     )
     storage_init = release.index(
         "- name: Initialize or verify the production capture bucket idempotently"
@@ -542,9 +680,9 @@ def test_early_seaweed_rollout_always_recreates_only_seaweed_before_drain() -> N
     early_rollout = release[start:storage_init]
 
     assert start < storage_init < crawler_drain
-    assert 'services: "{{ sahabino_network_infrastructure_services }}"' in early_rollout
-    assert "recreate: always" in early_rollout
-    assert "state: present" in early_rollout
+    assert "release_containers.py" in early_rollout
+    assert "'ensure'" in early_rollout
+    assert "--force-recreate" not in early_rollout
     assert "down" not in early_rollout
 
 
@@ -580,17 +718,33 @@ def test_seaweed_verification_uses_dynamic_exact_identity_and_docker_port_data()
     assert "no_log: true" in port_verification
     assert "sahabino_expected_seaweedfs_host_ip" in verify
     assert "verify_seaweedfs_port_binding || return 1" in assistant_identity
+    # The old duplicated Jinja/shell fragment escaped awk quotes incorrectly:
+    # under `sh -eu`, $2 was expanded as a missing shell argument. Assert that
+    # BOTH callers execute the same read-only runtime verifier instead.
+    shared_audit = SEAWEED_WRAPPER.read_text(encoding="utf-8")
     for marker in (
         "id -u seaweed",
         "id -g seaweed",
         "/^Uid:/",
         "/^Gid:/",
-        'test "$pid1_uid" = "$seaweed_uid"',
-        'test "$pid1_gid" = "$seaweed_gid"',
+        '"$pid1_uid" = "$seaweed_uid"',
+        '"$pid1_gid" = "$seaweed_gid"',
     ):
-        assert marker in identity
-        assert marker in assistant_identity
-    assert "1000" not in identity + assistant_identity
+        assert marker in shared_audit
+    assert "--verify-runtime" in identity
+    assert "--verify-runtime" in assistant_identity
+    assert "'sh', '-s', '--', '--verify-runtime'" in identity
+    assert "stdin_add_newline: false" in identity
+    assert "seaweedfs-entrypoint.sh" in identity
+    assert "sh -s -- --verify-runtime" in assistant_identity
+    assert "seaweedfs-entrypoint.sh" in assistant_identity
+    # The container may still carry an older inode for its single-file bind.
+    assert "/usr/local/bin/sahabino-seaweedfs-entrypoint" not in identity + assistant_identity
+    assert "pid1_uid=$(awk" not in identity + assistant_identity
+    assert "1000" not in identity + assistant_identity + shared_audit
+    assert "--verify-runtime" in RELEASE_TASKS.read_text()
+    syntax = subprocess.run(["sh", "-n", str(SEAWEED_WRAPPER)], capture_output=True, text=True)
+    assert syntax.returncode == 0, syntax.stderr
 
 
 @pytest.mark.parametrize(
@@ -635,7 +789,7 @@ verify_seaweedfs_port_binding
 
 def test_ci_runs_deployment_regressions_and_all_tracked_shell_syntax() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "uv run pytest tests/deployment" in workflow
+    assert "python -m pytest tests/deployment" in workflow
     assert "git ls-files -z '*.sh' | xargs -0 -n1 bash -n" in workflow
 
 

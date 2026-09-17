@@ -212,3 +212,13 @@ bash scripts/smoke-full-pipeline.sh
 
 Detailed behavior, flags, and side effects are documented in the
 [smoke-test guide](docs/testing/smoke-full-pipeline.md).
+
+### Production deployment (local-backup safety contract)
+
+Use the reviewed `deploy/ansible/sahabino-deploy.sh` launcher installed once to
+`/usr/local/sbin/sahabino-deploy`. It fetches the latest remote branch commit,
+stages that revision's automation, takes verified local-only persistent-data
+backups and reconciles missing-image containers after the backup gate. See
+[`deploy/ansible/README.md`](deploy/ansible/README.md#frozen-local-only-deployment-contract-2026-09-17).
+There is **no automatic database restore** and local backups do not protect
+against complete VPS failure. Do not deploy if the backup preflight fails.

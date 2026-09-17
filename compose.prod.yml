@@ -22,15 +22,27 @@ x-sahabino-object-storage-runtime: &sahabino-object-storage-runtime
   SAHABINO_OBJECT_STORAGE_PRESIGN_EXPIRY_SECONDS: "${SAHABINO_OBJECT_STORAGE_PRESIGN_EXPIRY_SECONDS:-900}"
   SAHABINO_OBJECT_STORAGE_MAX_CAPTURE_SIZE_BYTES: "${SAHABINO_OBJECT_STORAGE_MAX_CAPTURE_SIZE_BYTES:-2147483648}"
 
+# Explicitly override proxy variables injected from root's Docker CLI configuration.
+# Build/daemon proxy remains configured on the host; runtime service traffic is direct.
+x-sahabino-runtime-no-proxy: &sahabino-runtime-no-proxy
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  ALL_PROXY: ""
+  http_proxy: ""
+  https_proxy: ""
+  all_proxy: ""
+
 services:
   postgres:
     restart: unless-stopped
+    environment: *sahabino-runtime-no-proxy
     ports: !override []
 
   kafka:
     restart: unless-stopped
     ports: !override []
     environment:
+      <<: *sahabino-runtime-no-proxy
       KAFKA_LISTENERS: CONTROLLER://:9093,INTERNAL://:19092
       KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092
       KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
@@ -43,6 +55,7 @@ services:
     restart: unless-stopped
     environment:
       <<:
+        - *sahabino-runtime-no-proxy
         - *sahabino-production-runtime
         - *sahabino-object-storage-runtime
     ports: !override
@@ -55,7 +68,9 @@ services:
   crawler:
     restart: unless-stopped
     environment:
-      <<: *sahabino-production-runtime
+      <<:
+        - *sahabino-runtime-no-proxy
+        - *sahabino-production-runtime
       SAHABINO_APPLICATION_REGISTRY_BASE_URL: "http://api:8000"
       SAHABINO_PLAYSTORE_CRAWL_INTERVAL_MINUTES: "${SAHABINO_PLAYSTORE_CRAWL_INTERVAL_MINUTES:-60}"
       SAHABINO_PLAYSTORE_MAX_CONCURRENT_APPS: "${SAHABINO_PLAYSTORE_MAX_CONCURRENT_APPS:-3}"
@@ -81,7 +96,9 @@ services:
   ingestion:
     restart: unless-stopped
     environment:
-      <<: *sahabino-production-runtime
+      <<:
+        - *sahabino-runtime-no-proxy
+        - *sahabino-production-runtime
       SAHABINO_INGESTION_CONSUMER_GROUP_ID: "${SAHABINO_INGESTION_CONSUMER_GROUP_ID:-sahabino-ingestion-v1}"
 
   seaweedfs:
@@ -97,6 +114,7 @@ services:
         "-master.volumeSizeLimitMB=1024",
       ]
     environment:
+      <<: *sahabino-runtime-no-proxy
       SAHABINO_SEAWEEDFS_CONFIG_INPUT: /run/secrets/seaweedfs-s3.json
       SAHABINO_SEAWEEDFS_RUNTIME_DIR: /run/sahabino-seaweedfs
     tmpfs:
@@ -123,6 +141,7 @@ services:
     restart: unless-stopped
     environment:
       <<:
+        - *sahabino-runtime-no-proxy
         - *sahabino-production-runtime
         - *sahabino-object-storage-runtime
       SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID: "${SAHABINO_NETWORK_ANALYZER_CONSUMER_GROUP_ID:-sahabino-network-analyzer-v1}"
@@ -135,6 +154,7 @@ services:
 
   loki:
     restart: unless-stopped
+    environment: *sahabino-runtime-no-proxy
     ports: !override
       - name: http
         target: 3100
@@ -144,6 +164,7 @@ services:
 
   alloy:
     restart: unless-stopped
+    environment: *sahabino-runtime-no-proxy
     ports: !override
       - name: http
         target: 12345
@@ -154,6 +175,7 @@ services:
   grafana:
     restart: unless-stopped
     environment:
+      <<: *sahabino-runtime-no-proxy
       GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER}"
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
     ports: !override

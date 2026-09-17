@@ -3,6 +3,7 @@
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ sahabino_api_port }}/docs"
     method: GET
+    use_proxy: false
     status_code: 200
   register: sahabino_api_health
   retries: "{{ sahabino_healthcheck_retries }}"
@@ -165,27 +166,23 @@
   ansible.builtin.command:
     argv: >-
       {{ sahabino_compose_cli + [
-        'exec', '-T', 'seaweedfs', 'sh', '-eu', '-c',
-        'seaweed_uid="$(id -u seaweed 2>/dev/null)" || { echo "SeaweedFS seaweed account is missing" >&2; exit 1; };
-         seaweed_gid="$(id -g seaweed 2>/dev/null)" || { echo "SeaweedFS seaweed group is missing" >&2; exit 1; };
-         pid1_uid="$(awk \'/^Uid:/ {print $2}\' /proc/1/status)";
-         pid1_gid="$(awk \'/^Gid:/ {print $2}\' /proc/1/status)";
-         test "$pid1_uid" -ne 0 || { echo "SeaweedFS PID 1 must not run as root" >&2; exit 1; };
-         test "$pid1_uid" = "$seaweed_uid" || { echo "SeaweedFS PID 1 UID does not match the seaweed account" >&2; exit 1; };
-         test "$pid1_gid" = "$seaweed_gid" || { echo "SeaweedFS PID 1 GID does not match the seaweed account" >&2; exit 1; };
-         test -d /data && test "$(stat -c %u /data)" = "$seaweed_uid"
-         && test "$(stat -c %g /data)" = "$seaweed_gid" && su-exec seaweed test -w /data
-         || { echo "SeaweedFS /data ownership or writability is invalid" >&2; exit 1; };
-         test -f "$1" && test ! -L "$1"
-         && test "$(stat -c %u "$1")" = 0
-         && test "$(stat -c %g "$1")" = "$seaweed_gid"
-         && test "$(stat -c %a "$1")" = 640
-         && su-exec seaweed test -r "$1"
-         && ! su-exec seaweed test -w "$1"',
-        'sh', sahabino_seaweedfs_staged_config_path
+        'exec', '-T', '--user', '0', 'seaweedfs', 'sh', '-s', '--', '--verify-runtime'
       ] }}
     chdir: "{{ sahabino_app_dir }}"
+    stdin: "{{ lookup('ansible.builtin.file', sahabino_app_dir + '/infrastructure/network/seaweedfs-entrypoint.sh') }}"
+    stdin_add_newline: false
+  register: sahabino_seaweed_runtime_audit
   changed_when: false
+  failed_when: false
+
+- name: Require a valid SeaweedFS runtime security audit
+  ansible.builtin.assert:
+    that:
+      - sahabino_seaweed_runtime_audit.rc == 0
+      - "'SEAWEEDFS_RUNTIME_VERIFIED' in sahabino_seaweed_runtime_audit.stdout"
+    fail_msg: >-
+      SeaweedFS runtime identity or staged credential audit failed:
+      {{ sahabino_seaweed_runtime_audit.stderr | default('') | trim | truncate(600, true) }}
 
 - name: Verify the configured capture bucket without creating it
   ansible.builtin.command:
@@ -218,10 +215,24 @@
       ] }}
   changed_when: false
 
-- name: Record the successful resolved revision outside the repository
-  ansible.builtin.copy:
-    content: "{{ sahabino_resolved_revision }}\n"
-    dest: "{{ sahabino_app_parent_dir }}/DEPLOYED_REVISION"
-    owner: "{{ sahabino_deploy_user }}"
-    group: "{{ sahabino_deploy_group }}"
-    mode: "0644"
+- name: Require running application containers to match all newly built image IDs
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+      - verify
+      - --project
+      - "{{ sahabino_compose_project_name }}"
+      - --revision
+      - "{{ sahabino_deploy_revision }}"
+    chdir: "{{ sahabino_app_dir }}"
+  changed_when: false
+
+- name: Require HEAD to equal the operator-selected exact commit
+  ansible.builtin.assert:
+    that:
+      - sahabino_resolved_revision == sahabino_deploy_revision
+    fail_msg: Checkout/desired revision mismatch; do not mark this deployment successful.
+
+# Final marker is written atomically by the launcher only AFTER its additional
+# post-playbook verification succeeds; a failed wrapper must not claim success.

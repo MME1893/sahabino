@@ -1,5 +1,7 @@
 # Sahabino production deployment
 
+For the source-audit findings, regression coverage, production incident state, and release gates, see [DEPLOYMENT_AUDIT.md](DEPLOYMENT_AUDIT.md).
+
 The recommended production entry point is the hardened deployment assistant:
 
 ```bash
@@ -430,6 +432,13 @@ pinned image's original `/entrypoint.sh`. The upstream entrypoint retains its
 normal `/data` ownership repair and drops to the image's `seaweed` UID/GID 1000.
 Compose does not force a `user:` override or fixed host GID.
 
+The entrypoint is a **single-file bind mount**, so an existing container may
+retain an earlier file inode after Git checks out a new release. All runtime
+security audits therefore stream the exact checked-out entrypoint script over
+stdin into `sh -s -- --verify-runtime`; they do not execute the potentially
+stale mounted file or recreate the data-bearing container before backups.
+Startup continues to use the Compose bind mount as configured.
+
 After SeaweedFS is ready, deployment automatically runs the idempotent
 `python -m sahabino.network storage-init` command. Only then does it inspect
 `crawl_runs` for `pending` or `running` work. Active work is polled every 10
@@ -494,8 +503,8 @@ sudo pg_restore --list /var/backups/sahabino/postgres/NAME.dump >/dev/null
 ```
 
 These PostgreSQL dumps include network metadata and analysis rows, not the raw
-PCAP objects stored in the `seaweedfs_data` named volume. Automated raw-object
-backup/disaster recovery is currently out of scope. Never use Compose `down -v`
+PCAP objects stored in the `seaweedfs_data` named volume. The 2026-09-17 local-only release contract below adds consistent stopped-volume
+snapshots for pre-migration releases; off-host disaster recovery remains out of scope. Never use Compose `down -v`
 as a recovery or restart command; it destroys named-volume data.
 
 Run the Ansible manual-backup playbook using the persisted Vault password:
@@ -603,3 +612,139 @@ docker compose \
 
 For the complete post-deploy operations/check command set, continue with
 [`docs/operations/README.md`](../../docs/operations/README.md).
+
+## Frozen local-only deployment contract (2026-09-17)
+
+The following rules apply to the upgraded deployment assistant in this archive.
+**Local backups are not disaster recovery**: loss of this VPS or its disk can
+also destroy every backup. Configure off-host replication and perform a restore
+drill before relying on it for a production RPO. No automatic database restore
+occurs after a failed migration.
+
+### One-time upgrade from the old assistant
+
+An already-installed *old* `sahabino-deploy.sh` cannot execute code that it has
+not yet obtained. **Install the new launcher once**, without replacing the
+production checkout or touching containers/volumes. For example, transfer the
+updated `deploy/ansible/sahabino-deploy.sh` from this package to a temporary
+location on the VPS, then install that file as root:
+
+```bash
+sudo install -o root -g root -m 0750 /tmp/sahabino-deploy-new.sh /usr/local/sbin/sahabino-deploy
+sudo /usr/local/sbin/sahabino-deploy --deploy --revision fix/production-deployment --socks-proxy 127.0.0.1:8080
+```
+
+The temporary source must come from a reviewed and trusted release. Do not
+blindly checkout or reset the live repository just to update its launcher.
+After the one-time installation, use `/usr/local/sbin/sahabino-deploy` for
+subsequent releases. The launcher fetches the remote branch and pins its **full
+SHA**, stages that exact revision's deployment code in a root-only temporary
+directory, and executes that revision's assistant; it does not reuse a stale
+local branch. A deployment lock prevents two release processes from competing.
+The new assistant recovers missing PostgreSQL/Kafka containers automatically if
+their existing named volumes remain, then makes a verified PostgreSQL dump
+*before checkout*. It does not require manual container IDs, `docker compose up`,
+or `docker rm`. Production `.env`/Vault files remain intact.
+Recovery requires recognizable, compatible persisted state: PostgreSQL
+`PG_VERSION`/`global/pg_control` must match the configured image major version;
+Kafka `meta.properties` must match the configured cluster and node identities.
+For each **orphaned** database volume the assistant first creates a root-only,
+SHA-256-verified **cold archive** under
+`/var/backups/sahabino/releases/orphan-*/`. It checks local disk capacity with
+an additional 1 GiB reserve, and reattaches the same volume without deleting
+or overwriting its contents. If a volume is missing while the other database or
+SeaweedFS persists, or an existing orphan volume is empty/corrupt/ambiguous,
+the assistant fails closed rather than initializing a new empty database.
+An unrelated container attached to an orphan volume also blocks recovery.
+This recovery also runs when the checked-out SHA already equals the target SHA.
+These archives are local-only and are not a substitute for a restore drill.
+No explicit revision defaults to the remote's advertised HEAD branch. A SHA
+argument deploys that fetched commit rather than resolving a moving branch.
+
+### What happens in each deployment
+
+1. Resolve the remote branch to one immutable SHA; refuse dirty checkouts or
+   missing Git/backup prerequisites. Stage the selected automation, recover
+   missing database/broker containers from their original volumes (with a cold
+   archive first), and create a verified **pre-checkout PostgreSQL dump** when
+   the database exists.
+2. Checkout the pinned commit, provision the same revision's Ansible/controller,
+   render secrets and validate Compose. Build and tag *all* application images
+   with the exact full release SHA **before stopping any writers**.
+3. Verify local backup capacity ahead of downtime, requiring a minimum 1 GiB
+   free-space reserve **in addition to estimated backup space**. Existing
+   persistent infrastructure is started (if necessary) but never replaced
+   before this backup. The SeaweedFS readiness probe bypasses Docker proxy vars.
+4. Drain active crawling according to the existing timeout/explicit-interrupt
+   safety gate; stop only application writers by their Compose project/service
+   labels. Verify a new `pg_dump`/`pg_restore --list` after writers are stopped.
+5. Stop Kafka, SeaweedFS, Grafana, Loki and Alloy **only if previously running**,
+   archive their *local-driver named-volume data* while stopped, verify archive
+   contents/SHA-256, copy the PostgreSQL dump, and encrypt and verify a local
+   Secrets archive with the root-only Vault-password file via OpenSSL PBKDF2.
+   The snapshot tool restarts previously running persistent containers in a
+   `finally` block, even on archive failure. Disk or snapshot errors stop
+   deployment **before database migration**. The writer containers remain
+   stopped on failure rather than running incompatible code or schemas.
+6. With the successful snapshot manifest in hand, remove only stopped,
+   mount-free *application* containers referencing deleted image IDs. A
+   separate allowlist permits replacing SeaweedFS/observability containers
+   with missing images **only after checking their volume mounts and archive
+   checksums**. PostgreSQL and Kafka are never automatically removed.
+7. Reconcile SeaweedFS, migrate the DB, verify the exact Alembic head, provision
+   Kafka topics, force-recreate only the four application containers, and
+   reconcile observability preserving volumes. Check health, Kafka group, bucket,
+   and actual running application image IDs against their SHA-pinned image tags.
+   `DEPLOYED_REVISION` updates **only after full verification**.
+
+Persistent local artifacts are root-only under:
+
+- PostgreSQL dumps: `/var/backups/sahabino/postgres/`.
+- Missing-container cold recovery archives:
+  `/var/backups/sahabino/releases/orphan-*/` (one volume archive and checksum
+  manifest per recovered PostgreSQL or Kafka container).
+- Complete per-release bundles: `/var/backups/sahabino/releases/release-*/`.
+  Each bundle contains `postgres.dump`, `kafka.tar`, `seaweedfs.tar`,
+  `grafana.tar`, `loki.tar`, `alloy.tar` as applicable, `secrets.tar.enc` and a
+  `manifest.json` recording per-file SHA-256 hashes. Missing prior volumes are
+  omitted on the first deploy. Some services' volume sizes and snapshot time
+  can make the maintenance window significantly longer than a normal restart.
+
+**Important limits:** The SHA-256/`tarfile` and `pg_restore --list` checks verify
+archive integrity and the PostgreSQL archive catalog, **not** a proven full
+restore or application-level Kafka/SeaweedFS recovery. The local snapshots may
+fail when the volume driver is not `local`, paths/mounts differ from the known
+production layout, there is insufficient disk, or a required secret is unsafe.
+Those failures are deliberate: no best-effort partial release is performed.
+The secrets archive requires the separately safeguarded Vault password for
+decryption and contains sensitive credentials; never share it or include it in
+Git or a support bundle. The checksum manifest and backups themselves are
+local and not an off-host immutable backup.
+
+To inspect a backup without modifying production, as root:
+
+```bash
+sudo sha256sum /var/backups/sahabino/releases/RELEASE/kafka.tar
+sudo tar -tf /var/backups/sahabino/releases/RELEASE/seaweedfs.tar | head
+sudo pg_restore --list /var/backups/sahabino/releases/RELEASE/postgres.dump > /dev/null
+```
+
+Compare hashes against the **same bundle's** `manifest.json`. A real recovery
+must be planned and performed while all corresponding application writers and
+persistent containers are stopped, using a *separate* recovery runbook and
+controlled destination volumes. Do **not** unpack archives into running Docker
+volumes, blindly overwrite existing database files, or assume a code rollback
+is safe after an incompatible Alembic migration. Keep the existing explicit
+`restore.yml` workflow for PostgreSQL and require a manual, tested recovery plan
+for Kafka and SeaweedFS. The script never executes automatic data restore.
+
+Proxy handling: `compose.prod.yml` explicitly supplies empty HTTP(S)/ALL_PROXY
+settings for runtime services so Docker CLI build proxies do not leak into
+containers. The SeaweedFS healthcheck also strips proxy variables and uses the
+loopback master endpoint. Docker daemon/build proxy configuration remains a
+host-level prerequisite and is not silently rewritten by the deployment.
+
+Regression coverage: `pytest tests/deployment`, shell `bash -n`, and the new
+`.github/workflows/deployment-safety.yml` workflow. This archive's original
+export did not contain the repository's existing `.github/workflows/ci.yml`;
+the new deployment-safety workflow is additive rather than a replacement.

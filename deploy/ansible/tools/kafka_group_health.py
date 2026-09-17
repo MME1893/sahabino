@@ -24,7 +24,7 @@ def parse_group_state(output: str) -> tuple[str, int] | None:
 
 
 def _default_runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=False, capture_output=True, text=True)
+    return subprocess.run(command, check=False, capture_output=True, text=True, timeout=35)
 
 
 def wait_for_healthy_group(
@@ -39,7 +39,21 @@ def wait_for_healthy_group(
     deadline = monotonic() + timeout_seconds
     last_detail = "group state was unavailable"
     while True:
-        result = runner(command)
+        try:
+            result = runner(command)
+        except subprocess.TimeoutExpired:
+            last_detail = "Kafka group command timed out after 35 seconds"
+            if monotonic() >= deadline:
+                print(
+                    f"Kafka analyzer consumer did not become healthy: {last_detail}",
+                    file=sys.stderr,
+                )
+                return False
+            sleeper(min(interval_seconds, max(0.0, deadline - monotonic())))
+            continue
+        except OSError as error:
+            print(f"Kafka group command could not run: {error}", file=sys.stderr)
+            return False
         if result.returncode == 0:
             state = parse_group_state(result.stdout)
             if state is not None:
@@ -64,15 +78,22 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--cwd")
-    parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser
 
 
 def main(argv: list[str]) -> int:
-    arguments = _parser().parse_args(argv[1:])
-    command = arguments.command
-    if command and command[0] == "--":
-        command = command[1:]
+    if any(arg in ("-h", "--help") for arg in argv[1:]):
+        _parser().parse_args(["--help"])
+        return 0
+    # Keep subprocess argv separate from our own flags.  REMAINDER has already
+    # caused two production failures in other helpers when flags followed mode.
+    try:
+        separator = argv.index("--", 1)
+    except ValueError:
+        print("Kafka group health requires '--' before the command", file=sys.stderr)
+        return 2
+    arguments = _parser().parse_args(argv[1:separator])
+    command = argv[separator + 1 :]
     if not command:
         print("Kafka group health check requires a command", file=sys.stderr)
         return 2
@@ -84,6 +105,7 @@ def main(argv: list[str]) -> int:
             check=False,
             capture_output=True,
             text=True,
+            timeout=35,
         )
 
     return (

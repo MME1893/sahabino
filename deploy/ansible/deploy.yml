@@ -25,12 +25,34 @@
         name: sahabino_deploy
         tasks_from: configure
 
-    - name: Build, migrate, provision topics, and update services
-      ansible.builtin.include_role:
-        name: sahabino_deploy
-        tasks_from: release
+    - name: Apply and verify a fail-closed release
+      block:
+        - name: Build, migrate, provision topics, and update services
+          ansible.builtin.include_role:
+            name: sahabino_deploy
+            tasks_from: release
 
-    - name: Verify and record the successful deployment
-      ansible.builtin.include_role:
-        name: sahabino_deploy
-        tasks_from: verify
+        - name: Verify and record the successful deployment
+          ansible.builtin.include_role:
+            name: sahabino_deploy
+            tasks_from: verify
+      rescue:
+        - name: Stop application writers on failed migration or verification after interruption began
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+              - stop-app
+              - --project
+              - "{{ sahabino_compose_project_name }}"
+            chdir: "{{ sahabino_app_dir }}"
+          changed_when: true
+          failed_when: false
+          when: sahabino_deployment_writer_stop_started | default(false) | bool
+
+        - name: Abort without automatically restoring or reverting the database
+          ansible.builtin.fail:
+            msg: >-
+              Release failed. If the maintenance window began, application writers
+              were stopped to prevent additional writes. No database restore or
+              image rollback was performed; inspect backup manifest and logs.

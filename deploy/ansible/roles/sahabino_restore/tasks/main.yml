@@ -65,30 +65,32 @@
         group: root
         mode: "0600"
 
-    - name: Stop database-writing application services
-      community.docker.docker_compose_v2:
-        project_src: "{{ sahabino_app_dir }}"
-        files: "{{ sahabino_compose_files }}"
-        env_files:
-          - .env
-        project_name: "{{ sahabino_compose_project_name }}"
-        profiles: "{{ sahabino_compose_profiles }}"
-        services: "{{ sahabino_database_writers }}"
-        state: stopped
+    - name: Stop database-writing application services by label without inspecting old images
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+          - stop-app
+          - --project
+          - "{{ sahabino_compose_project_name }}"
+        chdir: "{{ sahabino_app_dir }}"
+      changed_when: true
 
-    - name: Ensure PostgreSQL is healthy for the safety backup and restore
-      community.docker.docker_compose_v2:
-        project_src: "{{ sahabino_app_dir }}"
-        files: "{{ sahabino_compose_files }}"
-        env_files:
-          - .env
-        project_name: "{{ sahabino_compose_project_name }}"
-        profiles: "{{ sahabino_compose_profiles }}"
-        services:
-          - postgres
-        state: present
-        wait: true
-        wait_timeout: 120
+    - name: Ensure PostgreSQL starts without a data-bearing container recreation
+      ansible.builtin.command:
+        argv: "{{ ['python3', sahabino_app_dir + '/deploy/ansible/tools/release_containers.py', 'ensure', '--project', sahabino_compose_project_name, '--service', 'postgres', '--'] + sahabino_restore_compose_cli }}"
+        chdir: "{{ sahabino_app_dir }}"
+      changed_when: false
+
+    - name: Verify PostgreSQL readiness before the restore-safety backup
+      ansible.builtin.command:
+        argv: "{{ sahabino_restore_compose_cli + ['exec', '-T', 'postgres', 'pg_isready', '--quiet', '--username', vault_sahabino_postgres_user, '--dbname', vault_sahabino_postgres_db] }}"
+        chdir: "{{ sahabino_app_dir }}"
+      register: sahabino_restore_postgres_ready
+      changed_when: false
+      retries: "{{ sahabino_healthcheck_retries }}"
+      delay: "{{ sahabino_healthcheck_delay_seconds }}"
+      until: sahabino_restore_postgres_ready.rc == 0
 
     - name: Create and verify a safety backup of the current database
       ansible.builtin.include_role:
@@ -246,28 +248,47 @@
           The restored database revision does not match the checked-out code.
           Application services remain stopped.
 
-    - name: Restart the database-writing application services
-      community.docker.docker_compose_v2:
-        project_src: "{{ sahabino_app_dir }}"
-        files: "{{ sahabino_compose_files }}"
-        env_files:
-          - .env
-        project_name: "{{ sahabino_compose_project_name }}"
-        profiles: "{{ sahabino_compose_profiles }}"
-        services: "{{ sahabino_database_writers }}"
-        state: present
-        wait: true
-        wait_timeout: 120
+    - name: Remove only stopped mount-free application containers with deleted image IDs
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ sahabino_app_dir }}/deploy/ansible/tools/release_containers.py"
+          - remove-stale
+          - --project
+          - "{{ sahabino_compose_project_name }}"
+        chdir: "{{ sahabino_app_dir }}"
+      changed_when: true
 
-    - name: Verify API health after restore
+    # --no-deps intentionally bypasses Compose ordering.  Do not bring the
+    # crawler up until the restored API has passed readiness.
+    - name: Start the API using its existing image and without removing volumes
+      ansible.builtin.command:
+        argv: "{{ sahabino_restore_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '120', 'api'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+      changed_when: true
+
+    - name: Verify API health after restore before starting background workers
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ sahabino_api_port }}/docs"
         method: GET
         status_code: 200
+        use_proxy: false
       register: sahabino_restore_api_health
       retries: "{{ sahabino_healthcheck_retries }}"
       delay: "{{ sahabino_healthcheck_delay_seconds }}"
       until: sahabino_restore_api_health.status == 200
+
+    - name: Start ingestion and analyzer after restored API readiness
+      ansible.builtin.command:
+        argv: "{{ sahabino_restore_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '120', 'ingestion', 'network-analyzer'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+      changed_when: true
+
+    - name: Start crawler only after the restored API and background workers
+      ansible.builtin.command:
+        argv: "{{ sahabino_restore_compose_cli + ['up', '-d', '--no-deps', '--no-build', '--pull', 'never', '--force-recreate', '--wait', '--wait-timeout', '120', 'crawler'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+      changed_when: true
   always:
     - name: Remove the dump copy from the PostgreSQL container
       ansible.builtin.command:

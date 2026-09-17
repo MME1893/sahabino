@@ -1,0 +1,27 @@
+name: Deployment safety
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  deployment-regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest pyyaml ansible-core
+      - name: Validate all shell entrypoints
+        run: |
+          git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+          sh -n infrastructure/network/seaweedfs-entrypoint.sh
+      - name: Validate Ansible playbooks without touching a host
+        run: |
+          cd deploy/ansible
+          for playbook in provision.yml deploy.yml backup.yml restore.yml; do
+            ansible-playbook -i inventory/production.example.yml --syntax-check "$playbook"
+          done
+      - name: Run deployment regression tests
+        run: python -m pytest tests/deployment -q
