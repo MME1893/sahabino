@@ -59,9 +59,26 @@
           set -eu
           export PGPASSWORD='{{ vault_sahabino_grafana_reader_password }}'
           exec psql --no-psqlrc --set ON_ERROR_STOP=1 \
-            --host 127.0.0.1 --username grafana_reader \
+            --host postgres --username grafana_reader \
             --dbname '{{ vault_sahabino_postgres_db }}' \
             --command 'SELECT count(id) FROM applications; SELECT count(id) FROM crawl_runs; SELECT count(id) FROM crawl_tasks; SELECT count(id) FROM reviews; SELECT count(review_id) FROM review_observations;'
+        stdin_add_newline: true
+      changed_when: false
+      no_log: true
+
+    - name: Reject a reader connection that succeeds with an intentionally wrong password
+      ansible.builtin.command:
+        argv: "{{ sahabino_compose_cli + ['exec', '-T', 'postgres', 'sh', '-s'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+        stdin: |-
+          set -eu
+          if PGPASSWORD='sahabino-intentionally-wrong-auth-probe' PGPASSFILE=/dev/null \
+             psql --no-psqlrc --no-password --host postgres \
+               --username grafana_reader --dbname '{{ vault_sahabino_postgres_db }}' \
+               --command 'SELECT 1' >/dev/null 2>&1; then
+            echo 'Grafana reader connection accepted an incorrect password' >&2
+            exit 1
+          fi
         stdin_add_newline: true
       changed_when: false
       no_log: true

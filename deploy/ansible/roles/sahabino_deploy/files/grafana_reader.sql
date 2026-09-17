@@ -80,6 +80,51 @@ BEGIN
         RAISE EXCEPTION 'grafana_reader can create objects in the public schema';
     END IF;
 
+    -- A pre-existing role could have column-level SELECT on sensitive fields
+    -- without having table-level SELECT. Audit effective privileges, not only
+    -- table grants, before adding the approved column grants below.
+    IF EXISTS (
+        SELECT 1
+        FROM (VALUES
+            ('applications', ARRAY[
+                'id', 'name', 'package_name', 'language_code', 'country_code',
+                'is_active', 'deactivated_at', 'created_at', 'updated_at'
+            ]),
+            ('crawl_runs', ARRAY[
+                'id', 'trigger_type', 'status', 'scheduled_for', 'started_at',
+                'finished_at', 'created_at'
+            ]),
+            ('crawl_tasks', ARRAY[
+                'id', 'crawl_run_id', 'application_id', 'task_type', 'status',
+                'language_code', 'country_code', 'attempt_count', 'started_at',
+                'finished_at', 'error_code', 'created_at'
+            ]),
+            ('reviews', ARRAY[
+                'id', 'application_id', 'source_at', 'thumbs_up_count',
+                'score', 'source_adapter', 'first_observed_at',
+                'last_observed_at', 'created_at', 'updated_at'
+            ]),
+            ('review_observations', ARRAY[
+                'crawl_task_id', 'review_id', 'observed_at', 'position', 'score',
+                'thumbs_up_count', 'source_adapter', 'source_at',
+                'sentiment_language', 'sentiment_label', 'sentiment_status',
+                'sentiment_processed_at', 'sentiment_attempt_count'
+            ])
+        ) AS allowed(table_name, column_names)
+        JOIN pg_class relation ON relation.relname = allowed.table_name
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+        WHERE namespace.nspname = 'public'
+          AND attribute.attnum > 0
+          AND NOT attribute.attisdropped
+          AND NOT (attribute.attname = ANY (allowed.column_names))
+          AND has_column_privilege(
+              'grafana_reader', relation.oid, attribute.attname, 'SELECT'
+          )
+    ) THEN
+        RAISE EXCEPTION 'grafana_reader can read unapproved dashboard columns';
+    END IF;
+
     IF EXISTS (
         SELECT 1
         FROM unnest(ARRAY[

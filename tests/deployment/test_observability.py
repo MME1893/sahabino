@@ -152,7 +152,7 @@ def test_optional_reader_environment_omits_invalid_or_placeholder_credentials() 
 
 def test_optional_vault_reference_contract_uses_the_existing_postgres_secret() -> None:
     vault_example = (ROOT / "deploy/ansible/group_vars/production/vault.yml.example").read_text()
-    shared_password = "Primary$Password-2026"
+    shared_password = "PrimaryPassword-2026"
     reference = "{{ vault_sahabino_postgres_password }}"
 
     assert reference in vault_example
@@ -176,7 +176,7 @@ def test_ansible_resolves_optional_vault_reference_when_available(tmp_path: Path
 - hosts: localhost
   gather_facts: false
   vars:
-    vault_sahabino_postgres_password: Primary$Password-2026
+    vault_sahabino_postgres_password: PrimaryPassword-2026
     vault_sahabino_grafana_reader_password: "{{ vault_sahabino_postgres_password }}"
   tasks:
     - name: Resolve the optional reference without printing either secret

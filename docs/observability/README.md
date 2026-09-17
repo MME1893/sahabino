@@ -51,10 +51,21 @@ database role.
 Password sharing increases the impact of disclosure because the same secret may
 authenticate the primary PostgreSQL account, which can have broader privileges.
 Only enroll this reference when that trade-off is approved. The effective primary
-password must contain at least 20 characters from letters, digits, `.`, `_`,
-`@`, `$`, and `-`, and cannot contain `CHANGE_ME`. An invalid effective value is
+password must satisfy the existing primary PostgreSQL preflight contract:
+20 or more characters from letters, digits, `.`, `_`, and `-`, without
+`CHANGE_ME`. The reader-only password contract accepts additional characters,
+but sharing a primary password does not bypass its stricter validation. An invalid effective value is
 not rendered into `.env`; the optional feature is reported disabled while the
 original deployment continues.
+
+The reader verification connects to `postgres:5432`, not the database
+container's `127.0.0.1`: a normal `initdb` cluster can permit loopback
+`trust` authentication. Activation also requires that an intentionally wrong
+password be rejected over the same connection route. A `trust`-configured
+network rejects activation rather than pretending to verify a password.
+
+An existing reader with unapproved column-level SELECT privileges is rejected
+instead of silently retaining access to review text or other restricted data.
 
 A normal reviewed deployment creates or verifies the reader after migrations,
 verifies the credential over TCP, and reconciles Grafana. If the key is missing,
