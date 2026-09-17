@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from inspect import signature
@@ -638,7 +639,9 @@ class BatchProducer:
         self.closed = True
 
 
-def test_kafka_publisher_uses_application_key_and_one_event_per_review() -> None:
+def test_kafka_publisher_uses_application_key_and_one_event_per_review(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     producer = BatchProducer()
     publisher = KafkaCollectedEventPublisher(producer)  # type: ignore[arg-type]
     application = ApplicationRef(uuid4(), "Example", "com.example.app")
@@ -675,9 +678,13 @@ def test_kafka_publisher_uses_application_key_and_one_event_per_review() -> None
     publisher.publish_app_stats(
         crawl_task_id=app_task_id, application=application, details=app_details
     )
-    publisher.publish_reviews(
-        crawl_task_id=review_task_id, application=application, reviews=review_set
-    )
+    with caplog.at_level(
+        logging.INFO,
+        logger="sahabino.crawler.infrastructure.messaging.kafka",
+    ):
+        publisher.publish_reviews(
+            crawl_task_id=review_task_id, application=application, reviews=review_set
+        )
 
     assert len(producer.batches[0]) == 1
     assert producer.batches[0][0].topic == PLAYSTORE_APP_STATS_TOPIC
@@ -694,6 +701,13 @@ def test_kafka_publisher_uses_application_key_and_one_event_per_review() -> None
     }
     assert {message.event.payload.observed_at for message in producer.batches[1]} == {NOW}
     assert {message.event.payload.source_adapter for message in producer.batches[1]} == {"primary"}
+    published_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "crawler.review.batch_published"
+    )
+    assert published_record.record_count == 2
+    assert published_record.crawl_task_id == review_task_id
 
 
 def test_kafka_publisher_treats_empty_reviews_as_an_empty_successful_batch() -> None:

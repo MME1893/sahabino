@@ -8,6 +8,11 @@ vault_sahabino_postgres_password: CHANGE_ME_USE_A_LONG_URL_SAFE_PASSWORD
 vault_sahabino_grafana_admin_user: admin
 vault_sahabino_grafana_admin_password: CHANGE_ME_USE_A_LONG_URL_SAFE_PASSWORD
 
+# Optional explicit enrollment. This resolves to the existing PostgreSQL Vault
+# secret without creating a second plaintext copy. The separate grafana_reader
+# database role remains least-privilege and read-only.
+# vault_sahabino_grafana_reader_password: "{{ vault_sahabino_postgres_password }}"
+
 # Credentials for the local SeaweedFS S3-compatible endpoint on the Sahabino
 # VPS. They are not AWS credentials and must match the local SeaweedFS S3
 # configuration rendered outside the checkout. The standard production deploy

@@ -268,9 +268,13 @@ services:
     profiles:
       - observability
 
+    entrypoint: ["/bin/sh", "/usr/local/bin/sahabino-grafana-entrypoint"]
+
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-sahabino}
+      POSTGRES_DB: ${POSTGRES_DB:-sahabino}
+      GRAFANA_POSTGRES_PASSWORD: ${GRAFANA_POSTGRES_PASSWORD:-}
 
     ports:
       - "3000:3000"
@@ -278,6 +282,7 @@ services:
     volumes:
       - ./infrastructure/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infrastructure/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infrastructure/observability/grafana/entrypoint.sh:/usr/local/bin/sahabino-grafana-entrypoint:ro
       - grafana_data:/var/lib/grafana
 
     depends_on:
