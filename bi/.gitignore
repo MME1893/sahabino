@@ -1,0 +1,5 @@
+.env
+secrets/
+backups/
+*.dump
+*.log

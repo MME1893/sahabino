@@ -1,0 +1,105 @@
+\set ON_ERROR_STOP on
+
+-- OPERATOR-REVIEWED EXAMPLE ONLY. Do not run from docker compose.
+-- Run once as an authorized PostgreSQL administrator, then assign passwords
+-- interactively with psql's \password command so they never enter this file.
+
+CREATE ROLE metabase_app
+    LOGIN
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOREPLICATION;
+
+CREATE DATABASE metabase_app
+    OWNER metabase_app
+    ENCODING 'UTF8'
+    TEMPLATE template0;
+
+REVOKE ALL PRIVILEGES ON DATABASE metabase_app FROM PUBLIC;
+GRANT CONNECT, CREATE, TEMPORARY ON DATABASE metabase_app TO metabase_app;
+
+CREATE ROLE sahabino_bi_reader
+    LOGIN
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOREPLICATION;
+
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino
+    SET default_transaction_read_only = on;
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino
+    SET statement_timeout = '30s';
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino
+    SET lock_timeout = '5s';
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino
+    SET idle_in_transaction_session_timeout = '60s';
+
+\connect sahabino
+
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sahabino_bi_reader;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sahabino_bi_reader;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM sahabino_bi_reader;
+REVOKE CREATE ON SCHEMA public FROM sahabino_bi_reader;
+REVOKE TEMPORARY ON DATABASE sahabino FROM sahabino_bi_reader;
+
+GRANT CONNECT ON DATABASE sahabino TO sahabino_bi_reader;
+GRANT USAGE ON SCHEMA public TO sahabino_bi_reader;
+
+GRANT SELECT (
+    id,
+    name,
+    package_name,
+    language_code,
+    country_code,
+    is_active
+) ON TABLE public.applications TO sahabino_bi_reader;
+
+GRANT SELECT (
+    id,
+    code,
+    name
+) ON TABLE public.categories TO sahabino_bi_reader;
+
+GRANT SELECT (
+    application_id,
+    category_id,
+    is_primary
+) ON TABLE public.application_categories TO sahabino_bi_reader;
+
+GRANT SELECT (
+    id,
+    crawl_task_id,
+    application_id,
+    collected_at,
+    min_installs,
+    score,
+    ratings_count,
+    reviews_count,
+    store_updated_on,
+    version,
+    ad_supported,
+    source_adapter
+) ON TABLE public.playstore_app_snapshots TO sahabino_bi_reader;
+
+GRANT SELECT (
+    id,
+    application_id,
+    task_type,
+    status,
+    language_code,
+    country_code
+) ON TABLE public.crawl_tasks TO sahabino_bi_reader;
+
+-- These checks must all return false. PostgreSQL privileges inherited through
+-- PUBLIC cannot be denied to one role; if either CREATE check is true, stop and
+-- have the DBA review the database/schema PUBLIC ACL before enabling Metabase.
+SELECT
+    has_schema_privilege('sahabino_bi_reader', 'public', 'CREATE')
+        AS reader_can_create_in_public,
+    has_database_privilege('sahabino_bi_reader', 'sahabino', 'CREATE')
+        AS reader_can_create_schema,
+    has_database_privilege('sahabino_bi_reader', 'sahabino', 'TEMPORARY')
+        AS reader_can_create_temp_objects,
+    pg_has_role('sahabino_bi_reader', 'pg_read_all_data', 'MEMBER')
+        AS reader_is_pg_read_all_data_member;

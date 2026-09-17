@@ -1,0 +1,45 @@
+name: sahabino-bi
+
+services:
+  metabase:
+    image: metabase/metabase:v0.63.18@sha256:1160b570cb11c107bce00e71293552df8a8363e01a32c2c7a048cee002dc8a73
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 1m
+    ports:
+      - "127.0.0.1:${METABASE_PORT:-3001}:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: "${MB_DB_HOST:-sahabino-postgres-bi}"
+      MB_DB_PORT: "${MB_DB_PORT:-5432}"
+      MB_DB_DBNAME: "${MB_DB_DBNAME:?Set MB_DB_DBNAME in bi/.env}"
+      MB_DB_USER: "${MB_DB_USER:?Set MB_DB_USER in bi/.env}"
+      MB_DB_PASS_FILE: /run/secrets/metabase_app_db_password
+      MB_ENCRYPTION_SECRET_KEY: "${MB_ENCRYPTION_SECRET_KEY:?Set MB_ENCRYPTION_SECRET_KEY in bi/.env}"
+      MB_SESSION_SECRET_KEY: "${MB_SESSION_SECRET_KEY:?Set MB_SESSION_SECRET_KEY in bi/.env}"
+      MB_ANON_TRACKING_ENABLED: "false"
+      JAVA_TIMEZONE: UTC
+    secrets:
+      - metabase_app_db_password
+    networks:
+      - bi_database
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          http://127.0.0.1:3000/api/health
+          | grep --quiet 'ok'
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+secrets:
+  metabase_app_db_password:
+    file: "${METABASE_APP_DB_PASSWORD_FILE:?Set METABASE_APP_DB_PASSWORD_FILE in bi/.env}"
+
+networks:
+  bi_database:
+    external: true
+    name: "${BI_DB_NETWORK:-sahabino-bi-db}"

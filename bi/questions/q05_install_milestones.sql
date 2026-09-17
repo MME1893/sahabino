@@ -1,0 +1,96 @@
+-- Observed min_installs thresholds at each real daily observation; no dates are generated.
+WITH eligible_snapshots AS (
+    SELECT
+        s.id AS snapshot_id,
+        s.application_id,
+        a.name AS application_name,
+        a.package_name,
+        ct.country_code AS crawl_country_code,
+        ct.language_code AS crawl_language_code,
+        (s.collected_at AT TIME ZONE 'UTC')::date AS snapshot_day_utc,
+        s.collected_at,
+        s.min_installs
+    FROM public.playstore_app_snapshots AS s
+    INNER JOIN public.crawl_tasks AS ct
+        ON ct.id = s.crawl_task_id
+       AND ct.application_id = s.application_id
+    INNER JOIN public.applications AS a
+        ON a.id = s.application_id
+    WHERE ct.task_type = 'app_details'
+      AND ct.status = 'succeeded'
+),
+ranked_daily AS (
+    SELECT
+        eligible_snapshots.*,
+        COUNT(*) OVER (
+            PARTITION BY
+                application_id,
+                crawl_country_code,
+                crawl_language_code,
+                snapshot_day_utc
+        ) AS snapshots_in_day,
+        ROW_NUMBER() OVER (
+            PARTITION BY
+                application_id,
+                crawl_country_code,
+                crawl_language_code,
+                snapshot_day_utc
+            ORDER BY collected_at DESC, snapshot_id DESC
+        ) AS daily_rank
+    FROM eligible_snapshots
+),
+daily_last AS (
+    SELECT *
+    FROM ranked_daily
+    WHERE daily_rank = 1
+),
+with_previous AS (
+    SELECT
+        daily_last.*,
+        LAG(snapshot_day_utc) OVER observation_window AS previous_observation_day_utc,
+        LAG(min_installs) OVER observation_window AS previous_min_installs_threshold
+    FROM daily_last
+    WINDOW observation_window AS (
+        PARTITION BY application_id, crawl_country_code, crawl_language_code
+        ORDER BY snapshot_day_utc
+    )
+)
+SELECT
+    application_id,
+    application_name,
+    package_name,
+    crawl_country_code,
+    crawl_language_code,
+    snapshot_day_utc,
+    collected_at AS daily_last_collected_at,
+    snapshots_in_day,
+    min_installs AS min_installs_threshold,
+    previous_min_installs_threshold,
+    CASE
+        WHEN previous_min_installs_threshold IS NULL THEN NULL
+        WHEN min_installs = previous_min_installs_threshold THEN NULL
+        ELSE min_installs - previous_min_installs_threshold
+    END AS observed_threshold_change,
+    CASE
+        WHEN previous_min_installs_threshold IS NULL THEN min_installs
+        WHEN min_installs > previous_min_installs_threshold THEN min_installs
+        ELSE NULL
+    END AS newly_observed_higher_threshold,
+    CASE
+        WHEN previous_min_installs_threshold IS NULL THEN 'first_observation'
+        WHEN min_installs > previous_min_installs_threshold THEN 'higher_threshold'
+        WHEN min_installs < previous_min_installs_threshold THEN 'lower_revision'
+        ELSE 'unchanged'
+    END AS threshold_observation_status,
+    CASE
+        WHEN previous_min_installs_threshold IS NULL THEN NULL
+        ELSE min_installs < previous_min_installs_threshold
+    END AS is_negative_threshold_revision,
+    previous_observation_day_utc,
+    snapshot_day_utc - previous_observation_day_utc AS days_since_previous_observation
+FROM with_previous
+ORDER BY
+    application_name,
+    crawl_country_code,
+    crawl_language_code,
+    snapshot_day_utc;
