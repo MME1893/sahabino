@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "allowed_device_models": ["REPLACE_WITH_CONTROLLED_DEVICE_MODEL"],
+  "allowed_network_profiles": ["REPLACE_WITH_CONTROLLED_NETWORK_PROFILE"],
+  "allowed_comparison_cohorts": [
+    ["com.example.package_a", "com.example.package_b"]
+  ],
+  "captures": []
+}
