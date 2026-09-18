@@ -174,7 +174,7 @@ FROM release_manifest rm
 LEFT JOIN store s USING(release_event_id)
 LEFT JOIN reviews r ON r.release_event_id=rm.release_event_id
  AND r.country_code=s.country_code AND r.language_code=s.language_code
-LEFT JOIN network n USING(release_event_id)
+LEFT JOIN network n ON n.release_event_id=rm.release_event_id
 CROSS JOIN runtime_capabilities c
 WHERE true
 [[AND rm.application_package={{application}}]]
