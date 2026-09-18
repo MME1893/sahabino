@@ -592,6 +592,147 @@
         "language": "text"
       },
       "capability": "base"
+    },
+    {
+      "key": "q25", "name": "Network — readiness and capability gates",
+      "description": "Schema/grant/data/manifest readiness without inventing benchmark results.",
+      "sql": "questions/q25_network_readiness.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {}, "parameters": {}, "capability": "network_readiness"
+    },
+    {
+      "key": "q26", "name": "Network — experiment and KPI coverage",
+      "description": "Metric-specific eligible capture counts and explicit exclusion reasons by controlled experiment group.",
+      "sql": "questions/q26_network_experiment_coverage.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q27", "name": "Network — per-trial transfer performance",
+      "description": "One controlled capture per trial; effective file throughput is primary and average capture throughput remains separate.",
+      "sql": "questions/q27_network_trial_transfer.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q28", "name": "Network — transfer efficiency",
+      "description": "Per-capture byte amplification and IP/transport header overhead; ratios are not pre-scaled percentages.",
+      "sql": "questions/q28_network_efficiency.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q29", "name": "Network — TCP stability evidence",
+      "description": "Per-capture TCP latency, retransmission indicators, recovery tax, stalls and resets; QUIC-only captures are N/A.",
+      "sql": "questions/q29_network_tcp_stability.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q30", "name": "Network — protocol and analyzer capability",
+      "description": "Observed transport mix and metric availability per capture; no TCP loss metric is fabricated for QUIC.",
+      "sql": "questions/q30_network_protocol_capability.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q31", "name": "Network — descriptive benchmark summary",
+      "description": "Exact experiment/session/scenario/file/version/device/Android/network/tool condition groups with metric-specific eligible counts; each aggregate is NULL under three.",
+      "sql": "questions/q31_network_benchmark_summary.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q32", "name": "Network — validated paired comparison",
+      "description": "Only same-experiment pair_id matches in an allowed opaque cohort with identical session/scenario/file/device/network conditions; each side and metric is independently eligible.",
+      "sql": "questions/q32_network_paired_comparison.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","experiment":"text","session":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "network"
+    },
+    {
+      "key": "q33", "name": "Experience — cross-source coverage",
+      "description": "Independent latest Store, unique sampled Review and controlled Network summaries with source timestamps and observation gap.",
+      "sql": "questions/q33_experience_source_coverage.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {}, "parameters": {"application":"text","country":"text","language":"text"},
+      "capability": "cross_domain"
+    },
+    {
+      "key": "q34", "name": "Experience — Store and Network UTC-day alignment",
+      "description": "Independently aggregated Store locale/day and Network app/day facts; alignment is not correlation or causality.",
+      "sql": "questions/q34_experience_store_network_daily.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","network_profile":"text","country":"text","language":"text","start_date":"date","end_date":"date"},
+      "capability": "cross_domain"
+    },
+    {
+      "key": "q35", "name": "Experience — User Voice and Network evidence",
+      "description": "Historical review state as of each cohort day's UTC cutoff beside independent Network daily summaries; no future revisions or complaint/topic inference.",
+      "sql": "questions/q35_experience_user_voice_network.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","network_profile":"text","start_date":"date","end_date":"date"},
+      "capability": "cross_domain"
+    },
+    {
+      "key": "q36", "name": "Experience — application pair evidence matrix",
+      "description": "Baham/Pinno and Telegram/WhatsApp source measures with exact Network conditions and separate Upload/Download rows; no pooled median or ranking.",
+      "sql": "questions/q36_experience_pair_comparison.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","comparison_pair":"text","country":"text","language":"text"},
+      "capability": "cross_domain"
+    },
+    {
+      "key": "q37", "name": "Release — metadata readiness",
+      "description": "Verified-date/window/evidence gates and optional source capability states; observational only.",
+      "sql": "questions/q37_release_readiness.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","release_event":"text","start_date":"date","end_date":"date"},
+      "capability": "release_readiness"
+    },
+    {
+      "key": "q38", "name": "Release — Network before and after",
+      "description": "Matched release conditions with separate throughput/amplification/TCP-recovery eligible counts; each delta is NULL unless both periods have at least three.",
+      "sql": "questions/q38_release_network_before_after.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","scenario":"text","network_profile":"text","release_event":"text","start_date":"date","end_date":"date"},
+      "capability": "release_network"
+    },
+    {
+      "key": "q39", "name": "Release — Store before and after",
+      "description": "Historical crawl-locale daily Store observations within explicit windows; signed endpoint differences retained.",
+      "sql": "questions/q39_release_store_before_after.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","country":"text","language":"text","release_event":"text","start_date":"date","end_date":"date"},
+      "capability": "release_base"
+    },
+    {
+      "key": "q40", "name": "Release — User Voice before and after",
+      "description": "Unique first-observed review cohorts using the latest observation by each period's explicit UTC cutoff; unavailable historical sentiment remains NULL.",
+      "sql": "questions/q40_release_user_voice_before_after.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","country":"text","language":"text","release_event":"text","start_date":"date","end_date":"date"},
+      "capability": "release_base"
+    },
+    {
+      "key": "q41", "name": "Release — combined evidence matrix",
+      "description": "Per release/scenario/matched-condition evidence from actual source captures, analyses and metric eligibility; manifest counts alone never imply readiness.",
+      "sql": "questions/q41_release_combined_evidence.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","release_event":"text","start_date":"date","end_date":"date"},
+      "capability": "release_base"
+    },
+    {
+      "key": "q42", "name": "Release — exclusions and limitations",
+      "description": "Per-event missing evidence and standing interpretation limitations, including unavailable topic annotations.",
+      "sql": "questions/q42_release_exclusions.sql", "collection": "questions", "display": "table",
+      "visualization_settings": {},
+      "parameters": {"application":"text","release_event":"text","start_date":"date","end_date":"date"},
+      "capability": "release_base"
     }
   ],
   "dashboards": [
@@ -1495,28 +1636,96 @@
           "size_y": 7
         }
       ]
+    },
+    {
+      "key": "network", "name": "Network Benchmark",
+      "description": "Readiness, performance, efficiency, stability, protocol and evidence sections. Descriptive controlled captures only.",
+      "collection": "dashboards", "capability": "network_readiness",
+      "filters": [
+        {"key":"application","name":"Application package","type":"string/=","mappings":[{"question":"q26","tag":"application"},{"question":"q27","tag":"application"},{"question":"q28","tag":"application"},{"question":"q29","tag":"application"},{"question":"q30","tag":"application"},{"question":"q31","tag":"application"},{"question":"q32","tag":"application"}]},
+        {"key":"scenario","name":"Transfer scenario","type":"string/=","mappings":[{"question":"q26","tag":"scenario"},{"question":"q27","tag":"scenario"},{"question":"q28","tag":"scenario"},{"question":"q29","tag":"scenario"},{"question":"q30","tag":"scenario"},{"question":"q31","tag":"scenario"},{"question":"q32","tag":"scenario"}]},
+        {"key":"experiment","name":"Experiment ID","type":"string/=","mappings":[{"question":"q26","tag":"experiment"},{"question":"q27","tag":"experiment"},{"question":"q28","tag":"experiment"},{"question":"q29","tag":"experiment"},{"question":"q30","tag":"experiment"},{"question":"q31","tag":"experiment"},{"question":"q32","tag":"experiment"}]},
+        {"key":"session","name":"Session ID","type":"string/=","mappings":[{"question":"q26","tag":"session"},{"question":"q27","tag":"session"},{"question":"q28","tag":"session"},{"question":"q29","tag":"session"},{"question":"q30","tag":"session"},{"question":"q31","tag":"session"},{"question":"q32","tag":"session"}]},
+        {"key":"network_profile","name":"Network profile","type":"string/=","mappings":[{"question":"q26","tag":"network_profile"},{"question":"q27","tag":"network_profile"},{"question":"q28","tag":"network_profile"},{"question":"q29","tag":"network_profile"},{"question":"q30","tag":"network_profile"},{"question":"q31","tag":"network_profile"},{"question":"q32","tag":"network_profile"}]},
+        {"key":"start_date","name":"Capture date starts (UTC)","type":"date/single","mappings":[{"question":"q26","tag":"start_date"},{"question":"q27","tag":"start_date"},{"question":"q28","tag":"start_date"},{"question":"q29","tag":"start_date"},{"question":"q30","tag":"start_date"},{"question":"q31","tag":"start_date"},{"question":"q32","tag":"start_date"}]},
+        {"key":"end_date","name":"Capture date ends (UTC)","type":"date/single","mappings":[{"question":"q26","tag":"end_date"},{"question":"q27","tag":"end_date"},{"question":"q28","tag":"end_date"},{"question":"q29","tag":"end_date"},{"question":"q30","tag":"end_date"},{"question":"q31","tag":"end_date"},{"question":"q32","tag":"end_date"}]}
+      ],
+      "cards": [
+        {"question":"q25","row":0,"col":0,"size_x":12,"size_y":5},
+        {"question":"q26","row":5,"col":0,"size_x":12,"size_y":7},
+        {"question":"q27","row":12,"col":0,"size_x":12,"size_y":7},
+        {"question":"q28","row":19,"col":0,"size_x":6,"size_y":7},
+        {"question":"q29","row":19,"col":6,"size_x":6,"size_y":7},
+        {"question":"q30","row":26,"col":0,"size_x":12,"size_y":7},
+        {"question":"q31","row":33,"col":0,"size_x":12,"size_y":7},
+        {"question":"q32","row":40,"col":0,"size_x":12,"size_y":7}
+      ]
+    },
+    {
+      "key":"experience", "name":"Application Experience — Store × Network × User Voice",
+      "description":"Independent source aggregates for Baham/Pinno and Telegram/WhatsApp. No composite score, correlation or causal claim.",
+      "collection":"dashboards", "capability":"cross_domain",
+      "filters":[
+        {"key":"application","name":"Application package","type":"string/=","mappings":[{"question":"q33","tag":"application"},{"question":"q34","tag":"application"},{"question":"q35","tag":"application"},{"question":"q36","tag":"application"}]},
+        {"key":"scenario","name":"Transfer scenario","type":"string/=","mappings":[{"question":"q34","tag":"scenario"},{"question":"q35","tag":"scenario"}]},
+        {"key":"network_profile","name":"Network profile","type":"string/=","mappings":[{"question":"q34","tag":"network_profile"},{"question":"q35","tag":"network_profile"}]},
+        {"key":"country","name":"Historical Store locale country","type":"string/=","mappings":[{"question":"q33","tag":"country"},{"question":"q34","tag":"country"},{"question":"q36","tag":"country"}]},
+        {"key":"language","name":"Historical Store locale language","type":"string/=","mappings":[{"question":"q33","tag":"language"},{"question":"q34","tag":"language"},{"question":"q36","tag":"language"}]},
+        {"key":"start_date","name":"UTC date starts","type":"date/single","mappings":[{"question":"q34","tag":"start_date"},{"question":"q35","tag":"start_date"}]},
+        {"key":"end_date","name":"UTC date ends","type":"date/single","mappings":[{"question":"q34","tag":"end_date"},{"question":"q35","tag":"end_date"}]},
+        {"key":"comparison_pair","name":"Application comparison pair","type":"string/=","mappings":[{"question":"q36","tag":"comparison_pair"}]}
+      ],
+      "cards":[
+        {"question":"q33","row":0,"col":0,"size_x":12,"size_y":7},
+        {"question":"q34","row":7,"col":0,"size_x":12,"size_y":8},
+        {"question":"q35","row":15,"col":0,"size_x":12,"size_y":8},
+        {"question":"q36","row":23,"col":0,"size_x":12,"size_y":8}
+      ]
+    },
+    {
+      "key":"release", "name":"Release Impact Explorer",
+      "description":"Selector/readiness, Network, Store, User Voice and evidence matrix. Observational before/after only.",
+      "collection":"dashboards", "capability":"release_readiness",
+      "filters":[
+        {"key":"application","name":"Application package","type":"string/=","mappings":[{"question":"q37","tag":"application"},{"question":"q38","tag":"application"},{"question":"q39","tag":"application"},{"question":"q40","tag":"application"},{"question":"q41","tag":"application"},{"question":"q42","tag":"application"}]},
+        {"key":"release_event","name":"Release event ID","type":"string/=","mappings":[{"question":"q37","tag":"release_event"},{"question":"q38","tag":"release_event"},{"question":"q39","tag":"release_event"},{"question":"q40","tag":"release_event"},{"question":"q41","tag":"release_event"},{"question":"q42","tag":"release_event"}]},
+        {"key":"scenario","name":"Network scenario","type":"string/=","mappings":[{"question":"q38","tag":"scenario"}]},
+        {"key":"network_profile","name":"Network profile","type":"string/=","mappings":[{"question":"q38","tag":"network_profile"}]},
+        {"key":"country","name":"Historical crawl country","type":"string/=","mappings":[{"question":"q39","tag":"country"},{"question":"q40","tag":"country"}]},
+        {"key":"language","name":"Historical crawl language","type":"string/=","mappings":[{"question":"q39","tag":"language"},{"question":"q40","tag":"language"}]},
+        {"key":"start_date","name":"Release date starts","type":"date/single","mappings":[{"question":"q37","tag":"start_date"},{"question":"q38","tag":"start_date"},{"question":"q39","tag":"start_date"},{"question":"q40","tag":"start_date"},{"question":"q41","tag":"start_date"},{"question":"q42","tag":"start_date"}]},
+        {"key":"end_date","name":"Release date ends","type":"date/single","mappings":[{"question":"q37","tag":"end_date"},{"question":"q38","tag":"end_date"},{"question":"q39","tag":"end_date"},{"question":"q40","tag":"end_date"},{"question":"q41","tag":"end_date"},{"question":"q42","tag":"end_date"}]}
+      ],
+      "cards":[
+        {"question":"q37","row":0,"col":0,"size_x":12,"size_y":6},
+        {"question":"q38","row":6,"col":0,"size_x":12,"size_y":8},
+        {"question":"q39","row":14,"col":0,"size_x":6,"size_y":8},
+        {"question":"q40","row":14,"col":6,"size_x":6,"size_y":8},
+        {"question":"q41","row":22,"col":0,"size_x":12,"size_y":7},
+        {"question":"q42","row":29,"col":0,"size_x":12,"size_y":7}
+      ]
     }
   ],
   "deferred": [
     {
       "key": "network_benchmark",
-      "requires": "validated PCAP capture provenance, comparable network sampling, app mapping and units"
+      "requires": "interpretation remains gated by validated private capture provenance and sufficient comparable trials"
     },
     {
       "key": "baham_pinno_network",
-      "requires": "comparable real network captures for both apps; Store-only direct comparison q18 is available"
+      "requires": "q32/q36 definitions exist; real matched pair_id captures are still required"
     },
     {
       "key": "telegram_whatsapp_network",
-      "requires": "same validated network capture windows and provenance"
+      "requires": "q32/q36 definitions exist; real matched pair_id captures are still required"
     },
     {
       "key": "store_network",
-      "requires": "matched locales/app IDs/capture windows and nonmissing network data"
+      "requires": "q33-q36 definitions exist; source coverage and observation gaps must be reviewed"
     },
     {
       "key": "release_impact",
-      "requires": "verified release dates, overlapping-release policy, sufficient before/after observed windows and coverage"
+      "requires": "q37-q42 definitions exist; verified release evidence and sufficient matched periods remain mandatory"
     }
   ]
 }

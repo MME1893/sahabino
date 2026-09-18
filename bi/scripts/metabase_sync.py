@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from urllib import error, parse, request
 
+from metadata import MetadataError, render_sql, validate_experiment, validate_release
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "manifest" / "content.json"
 DEFAULT_STATE = ROOT / "secrets" / "metabase_sync_state.json"
@@ -25,6 +27,16 @@ DML = re.compile(
 )
 BLOCK = re.compile(r"\[\[(.*?)\]\]", re.S)
 TAG = re.compile(r"\{\{([a-z_]+)\}\}")
+CAPABILITIES = (
+    "base",
+    "sentiment",
+    "network_readiness",
+    "network",
+    "cross_domain",
+    "release_readiness",
+    "release_base",
+    "release_network",
+)
 
 
 class SyncError(Exception):
@@ -55,15 +67,14 @@ def load_manifest(path=MANIFEST):
         if c["parent"] is not None and c["parent"] not in keys["collections"]:
             raise SyncError("Missing parent collection")
     for q in m["questions"]:
-        if q["collection"] not in keys["collections"] or q["capability"] not in (
-            "base",
-            "sentiment",
-        ):
+        if q["collection"] not in keys["collections"] or q["capability"] not in CAPABILITIES:
             raise SyncError("Invalid question collection/capability")
         path = (ROOT / q["sql"]).resolve()
         if not path.is_relative_to((ROOT / "questions").resolve()) or not path.is_file():
             raise SyncError("Question SQL path escapes questions/ or absent")
-        sql = path.read_text()
+        sql = render_sql(
+            path.read_text(), validate_experiment(), validate_release(), {}
+        )
         raw_sql = render_unfiltered(sql)
         clean = re.sub(r"/\*.*?\*/|--[^\n]*", " ", raw_sql, flags=re.S)
         if (
@@ -79,10 +90,7 @@ def load_manifest(path=MANIFEST):
         ):
             raise SyncError("Manifest SQL template tag mismatch in " + q["key"])
     for d in m["dashboards"]:
-        if d["collection"] not in keys["collections"] or d["capability"] not in (
-            "base",
-            "sentiment",
-        ):
+        if d["collection"] not in keys["collections"] or d["capability"] not in CAPABILITIES:
             raise SyncError("Invalid dashboard collection/capability")
         cards = d["cards"]
         ids = [c["question"] for c in cards]
@@ -291,8 +299,48 @@ def key_id(kind, key):
     return kind + ":" + key
 
 
-def desired_question(q, dbid, collection_id):
-    sql = (ROOT / q["sql"]).read_text()
+def card_read_path(path):
+    """Metabase >= 0.57 returns MBQL 5 by default; request documented legacy form.
+
+    POST/PUT still receive the manifest's validated legacy native-query payload.
+    This suffix is for reading saved Questions only (never mutation endpoints).
+    """
+    return path + "?legacy-mbql=true"
+
+
+def is_legacy_read_checkpoint(record, actual, want):
+    """Verify a checkpoint written by our *old*, MBQL5-unaware normalizer.
+
+    An old checkpoint cannot attest to its SQL or tags: require the live legacy
+    API response to match the complete desired payload before repairing state.
+    Reject any changed metadata, corrupted checkpoint, or divergent SQL.
+    """
+    old = record.get("remote")
+    if not isinstance(old, dict) or hash_value(old) != record.get("remote_hash"):
+        return False
+    legacy = old.get("dataset_query")
+    if not isinstance(legacy, dict) or not isinstance(legacy.get("native"), dict):
+        return False
+    if set(legacy) != {"database", "type", "native"} or set(legacy["native"]) != {
+        "query",
+        "template-tags",
+    }:
+        return False
+    if legacy["type"] is not None or legacy["native"] != {"query": None, "template-tags": {}}:
+        return False
+    if (
+        actual != want
+        or old.get("dataset_query", {}).get("database") != actual["dataset_query"]["database"]
+    ):
+        return False
+    return all(old.get(k) == actual.get(k) for k in actual if k != "dataset_query") and set(
+        old
+    ) == set(actual)
+
+
+def desired_question(q, dbid, collection_id, context=None):
+    context = context or (validate_experiment(), validate_release(), {})
+    sql = render_sql((ROOT / q["sql"]).read_text(), *context)
     tags = {
         name: {
             "id": name,
@@ -393,7 +441,29 @@ def validate_contract(api, version):
             raise SyncError("Pinned-version OpenAPI endpoint missing: " + path + " " + str(methods))
 
 
-def check_source(api, manifest):
+def capability_enabled(capability, capabilities):
+    network_ready = capabilities.get("network_state") in (
+        "NETWORK_SCHEMA_READY",
+        "NETWORK_EMPTY",
+        "NETWORK_DATA_AVAILABLE",
+        "NETWORK_COMPARISON_INSUFFICIENT",
+        "NETWORK_COMPARISON_READY",
+    )
+    return {
+        "base": True,
+        "sentiment": capabilities.get("sentiment_state") == "SENTIMENT_DATA_AVAILABLE",
+        "network_readiness": True,
+        "network": network_ready,
+        "cross_domain": network_ready,
+        "release_readiness": True,
+        "release_base": True,
+        "release_network": network_ready,
+    }[capability]
+
+
+def check_source(api, manifest, experiment=None, release=None):
+    experiment = experiment or validate_experiment()
+    release = release or validate_release()
     matches = [
         d
         for d in as_items(api.call("GET", "/api/database"))
@@ -421,7 +491,7 @@ def check_source(api, manifest):
             "Metabase source connection must use sahabino_bi_reader on sahabino (not admin)"
         )
     # Permission probes return booleans only; never read raw sensitive data.
-    from schema import BASE, SENSITIVE, SENTIMENT
+    from schema import BASE, NETWORK, SENSITIVE, SENTIMENT
 
     sensitive = [(t, c) for t, cols in SENSITIVE.items() for c in cols]
     safety = [
@@ -455,22 +525,38 @@ def check_source(api, manifest):
             "Source role unsafe: inherited, write, sensitive or schema privileges detected; no changes"
         )
 
-    def capability(schema):
+    def schema_present(schema):
         items = [(table, column) for table, cols in schema.items() for column in cols]
         expressions = [
-            "EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='"
+            "EXISTS(SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid "
+            "JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='"
             + t
-            + "' AND column_name='"
+            + "' AND a.attname='"
             + c
-            + "')"
+            + "' AND a.attnum>0 AND NOT a.attisdropped)"
             for t, c in items
         ]
         rows = dataset("SELECT " + ",".join(expressions))
         return len(rows) == 1 and all(x is True for x in rows[0])
 
-    if not capability(BASE):
+    def grants_present(schema):
+        items = [(table, column) for table, cols in schema.items() for column in cols]
+        rows = dataset(
+            "SELECT "
+            + ",".join(
+                "has_column_privilege(current_user,'public."
+                + table
+                + "','"
+                + column
+                + "','SELECT')"
+                for table, column in items
+            )
+        )
+        return len(rows) == 1 and all(x is True for x in rows[0])
+
+    if not schema_present(BASE) or not grants_present(BASE):
         raise SyncError("Missing required base schema columns/reader access; no content changes")
-    sentiment = capability(SENTIMENT)
+    sentiment = schema_present(SENTIMENT) and grants_present(SENTIMENT)
     if sentiment:
         # even with schema present, an empty classification population must not be fabricated.
         sentiment = bool(
@@ -478,12 +564,79 @@ def check_source(api, manifest):
                 "SELECT EXISTS(SELECT 1 FROM public.review_observations WHERE sentiment_status='done' AND sentiment_label IN ('positive','neutral','negative'))"
             )[0][0]
         )
+    if not schema_present(NETWORK):
+        network_state = "NETWORK_SCHEMA_MISSING"
+    elif not grants_present(NETWORK):
+        network_state = "NETWORK_GRANTS_MISSING"
+    else:
+        capture_count = dataset("SELECT count(*)::bigint FROM public.network_captures")[0][0]
+        network_state = "NETWORK_EMPTY" if capture_count == 0 else "NETWORK_DATA_AVAILABLE"
+
+    if experiment.records and network_state not in ("NETWORK_SCHEMA_MISSING", "NETWORK_GRANTS_MISSING"):
+        ids = ",".join("'" + row["capture_id"] + "'::uuid" for row in experiment.records)
+        db_rows = dataset(
+            "SELECT nc.id::text,a.package_name,nc.scenario,nc.transfer_file_size_bytes,nc.status,"
+            "(nar.capture_id IS NOT NULL),coalesce(nar.comparison_ready,false),"
+            "coalesce(nar.direction_metadata_available,false),coalesce(nar.truncated_packet_count,0),"
+            "nar.observed_primary_payload_span_ms,nar.effective_file_throughput_mbps "
+            "FROM public.network_captures nc JOIN public.applications a ON a.id=nc.application_id "
+            "LEFT JOIN public.network_analysis_results nar ON nar.capture_id=nc.id WHERE nc.id IN ("
+            + ids
+            + ")"
+        )
+        by_id = {row[0]: row for row in db_rows}
+        eligible_groups = {}
+        for row in experiment.records:
+            db = by_id.get(row["capture_id"])
+            if db is None:
+                raise SyncError("Verified experiment references a capture absent from the source")
+            if db[1] != row["application_package"] or db[2] != row["scenario"]:
+                raise SyncError("Experiment capture attribution/scenario conflicts with source")
+            if db[3] != row["test_file_size_bytes"] or db[4] != "analyzed" or not row["transfer_completed"]:
+                raise SyncError("Experiment transfer size/status is incomplete or inconsistent")
+            if db[5] and db[6] and db[7] and db[8] == 0 and db[9] and db[10] is not None:
+                key = tuple(
+                    row[name]
+                    for name in (
+                        "experiment_id", "session_id", "application_package", "scenario",
+                        "file_cohort_id", "test_file_size_bytes", "app_version", "device_model",
+                        "android_version", "network_type", "network_profile", "capture_tool",
+                        "capture_tool_version", "experiment_phase",
+                    )
+                )
+                eligible_groups[key] = eligible_groups.get(key, 0) + 1
+        experiment_state = "VERIFIED_EXPERIMENT_AVAILABLE"
+        if network_state != "NETWORK_EMPTY":
+            network_state = (
+                "NETWORK_COMPARISON_READY"
+                if any(count >= 3 for count in eligible_groups.values())
+                else "NETWORK_COMPARISON_INSUFFICIENT"
+            )
+    else:
+        experiment_state = "MANIFEST_NOT_SUPPLIED" if not experiment.records else "NETWORK_NOT_READY"
+
+    capabilities = {
+        "network_state": network_state,
+        "experiment_state": experiment_state,
+        "release_state": (
+            "VERIFIED_RELEASE_METADATA_AVAILABLE"
+            if any(
+                row["release_date_verified"] and row["release_date_precision"] == "day"
+                for row in release.records
+            )
+            else ("RELEASE_METADATA_UNVERIFIED" if release.records else "MANIFEST_NOT_SUPPLIED")
+        ),
+        "sentiment_state": "SENTIMENT_DATA_AVAILABLE" if sentiment else "SENTIMENT_UNAVAILABLE",
+        "topic_state": "ANNOTATIONS_UNAVAILABLE",
+    }
+    context = (experiment, release, capabilities)
     for q in manifest["questions"]:
-        if q["capability"] == "sentiment" and not sentiment:
+        if not capability_enabled(q["capability"], capabilities):
             continue
-        raw = render_unfiltered((ROOT / q["sql"]).read_text()).strip().rstrip(";")
+        compiled = render_sql((ROOT / q["sql"]).read_text(), *context)
+        raw = render_unfiltered(compiled).strip().rstrip(";")
         dataset("SELECT * FROM (" + raw + ") AS sahabino_bi_validation LIMIT 0")
-    return dbid, sentiment
+    return dbid, capabilities
 
 
 def read_state(path):
@@ -517,7 +670,7 @@ def write_state(path, state):
 
 
 class Sync:
-    def __init__(self, api, manifest, state, path, apply):
+    def __init__(self, api, manifest, state, path, apply, context=None):
         self.api = api
         self.m = manifest
         self.state = state
@@ -526,6 +679,7 @@ class Sync:
         self.ids = {"collection": {}, "question": {}, "dashboard": {}}
         self.actions = []
         self.lists = {}
+        self.context = context or (validate_experiment(), validate_release(), {})
 
     def inventory(self):
         for kind, endpoint in [
@@ -561,7 +715,7 @@ class Sync:
                 "question": "/api/card/",
                 "dashboard": "/api/dashboard/",
             }[kind] + str(rid)
-            remote = self.api.call("GET", path)
+            remote = self.api.call("GET", card_read_path(path) if kind == "question" else path)
             if remote.get("id") != rid or marker(kind, item["key"]) not in (
                 remote.get("description") or ""
             ):
@@ -576,8 +730,21 @@ class Sync:
                 )
             actual = norm(remote)
             if hash_value(actual) != record.get("remote_hash"):
+                if kind == "question" and is_legacy_read_checkpoint(record, actual, want):
+                    self.actions.append(("REPAIR_CHECKPOINT", k))
+                    if self.apply:
+                        self.state["objects"][k] = {
+                            "id": rid,
+                            "remote_hash": hash_value(actual),
+                            "remote": actual,
+                        }
+                        write_state(self.path, self.state)
+                    self.ids[kind][item["key"]] = rid
+                    return rid
                 raise SyncError(
-                    "Manual edit or unknown remote change for " + k + "; refusing overwrite"
+                    "Manual edit, incompatible prior checkpoint, or differing live SQL for "
+                    + k
+                    + "; refusing overwrite"
                 )
             if len(candidates) > 1 or any(c["id"] != rid for c in candidates):
                 raise SyncError("Ambiguous duplicate managed name for " + k)
@@ -594,8 +761,15 @@ class Sync:
                         (c.get("card_id") or (c.get("card") or {}).get("id")): c
                         for c in remote.get("dashcards", [])
                     }
-                    for c in payload["dashcards"]:
-                        c["id"] = old.get(c["card_id"], {}).get("id", -1)
+                    # Metabase validates dashcard IDs for uniqueness, including new
+                    # negative temporary IDs. A shared -1 for all new cards is invalid.
+                    for index, c in enumerate(payload["dashcards"]):
+                        c["id"] = old.get(c["card_id"], {}).get("id", -1 - index)
+                    ids = [c["id"] for c in payload["dashcards"]]
+                    if len(ids) != len(set(ids)):
+                        raise SyncError(
+                            "Duplicate dashboard-card IDs; refusing unsafe update for " + k
+                        )
                     if len(old) > len(payload["dashcards"]):
                         raise SyncError("Unmanaged dashcard present; refusing to delete")
                 self.api.call("PUT", path, payload)
@@ -651,8 +825,9 @@ class Sync:
         if kind == "dashboard":
             shell = self.api.call("GET", path)
             cards = copy.deepcopy(want["dashcards"])
-            for c in cards:
-                c["id"] = -1
+            # Each unsaved dashboard card needs a distinct negative temp ID.
+            for index, c in enumerate(cards):
+                c["id"] = -1 - index
             self.actions.append(("ASSEMBLE", k))
             self.api.call(
                 "PUT",
@@ -666,7 +841,7 @@ class Sync:
         return rid
 
     def record(self, k, rid, path, norm, want):
-        obj = self.api.call("GET", path)
+        obj = self.api.call("GET", card_read_path(path) if k.startswith("question:") else path)
         if obj.get("id") != rid or marker(*k.split(":", 1)) not in (obj.get("description") or ""):
             raise SyncError(
                 "Created/updated "
@@ -690,7 +865,16 @@ class Sync:
         self.state["objects"][k] = {"id": rid, "remote_hash": hash_value(actual), "remote": actual}
         write_state(self.path, self.state)
 
-    def run(self, dbid, sentiment):
+    def run(self, dbid, capabilities):
+        if isinstance(capabilities, bool):
+            capabilities = {
+                "network_state": "NETWORK_SCHEMA_MISSING",
+                "experiment_state": "MANIFEST_NOT_SUPPLIED",
+                "release_state": "MANIFEST_NOT_SUPPLIED",
+                "sentiment_state": "SENTIMENT_DATA_AVAILABLE" if capabilities else "SENTIMENT_UNAVAILABLE",
+                "topic_state": "ANNOTATIONS_UNAVAILABLE",
+            }
+        self.context = (self.context[0], self.context[1], capabilities)
         self.inventory()
         for c in self.m["collections"]:
             parent = self.ids["collection"].get(c["parent"]) if c["parent"] else None
@@ -701,21 +885,32 @@ class Sync:
             }
             self.reconcile("collection", c, want, parent)
         for q in self.m["questions"]:
-            if q["capability"] == "sentiment" and not sentiment:
+            if not capability_enabled(q["capability"], capabilities):
                 self.actions.append(("SKIP_CAPABILITY", "question:" + q["key"]))
                 continue
             self.reconcile(
-                "question", q, desired_question(q, dbid, self.ids["collection"][q["collection"]])
+                "question",
+                q,
+                desired_question(q, dbid, self.ids["collection"][q["collection"]], self.context),
             )
         for d in self.m["dashboards"]:
-            if d["capability"] == "sentiment" and not sentiment:
+            enabled_questions = {
+                q["key"] for q in self.m["questions"] if capability_enabled(q["capability"], capabilities)
+            }
+            disabled_cards = [
+                card["question"] for card in d["cards"] if card["question"] not in enabled_questions
+            ]
+            if disabled_cards and key_id("dashboard", d["key"]) in self.state["objects"]:
+                self.actions.append(("SKIP_CAPABILITY_PRESERVE", "dashboard:" + d["key"]))
+                continue
+            if not any(card["question"] in enabled_questions for card in d["cards"]):
                 self.actions.append(("SKIP_CAPABILITY", "dashboard:" + d["key"]))
                 continue
             want = desired_dashboard(
                 d,
                 self.ids["collection"][d["collection"]],
                 self.ids["question"],
-                set(self.ids["question"]),
+                enabled_questions,
             )
             self.reconcile("dashboard", d, want)
         return self.actions
@@ -728,23 +923,40 @@ def main(argv=None, api_override=None):
     p.add_argument("--api-key-file", default=str(ROOT / "secrets" / "metabase_api_key"))
     p.add_argument("--state-file", default=str(DEFAULT_STATE))
     p.add_argument("--allow-remote", action="store_true")
+    p.add_argument("--experiment-manifest")
+    p.add_argument("--release-manifest")
     a = p.parse_args(argv)
     sync = None
     try:
         m = load_manifest()
+        experiment = validate_experiment(a.experiment_manifest)
+        release = validate_release(a.release_manifest)
+        if not experiment.valid or not release.valid:
+            raise SyncError("Private experiment/release manifest validation failed")
         state = read_state(a.state_file)
         api = api_override or HTTPAPI(a.endpoint, secret(a.api_key_file), a.allow_remote)
         validate_contract(api, m["metabase_version"])
-        dbid, sentiment = check_source(api, m)
+        dbid, capabilities = check_source(api, m, experiment, release)
         print(
             "OK: exact source identity, reader privileges, SQL/schema, API health/version/OpenAPI verified"
         )
-        if not sentiment:
+        if capabilities["sentiment_state"] != "SENTIMENT_DATA_AVAILABLE":
             print(
                 "SKIP_CAPABILITY: sentiment schema/grants or classified data unavailable; optional cards/dashboard withheld"
             )
-        sync = Sync(api, m, state, a.state_file, a.action == "apply")
-        actions = sync.run(dbid, sentiment)
+        print(
+            "CAPABILITIES: "
+            + ", ".join(k + "=" + v for k, v in sorted(capabilities.items()))
+        )
+        sync = Sync(
+            api,
+            m,
+            state,
+            a.state_file,
+            a.action == "apply",
+            (experiment, release, capabilities),
+        )
+        actions = sync.run(dbid, capabilities)
         for operation, item in actions:
             print(operation + ": " + item)
         print(
@@ -752,7 +964,7 @@ def main(argv=None, api_override=None):
             + f": completed {len(actions)} action assessments; no unrelated content deleted"
         )
         return 0
-    except (SyncError, ValueError, OSError, KeyError, TypeError) as exc:
+    except (SyncError, MetadataError, ValueError, OSError, KeyError, TypeError) as exc:
         if sync:
             for op, item in sync.actions:
                 print(op + ": " + item)
