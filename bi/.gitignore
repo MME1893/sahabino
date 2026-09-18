@@ -3,3 +3,6 @@ secrets/
 backups/
 *.dump
 *.log
+experiments/experiment_manifest.json
+experiments/release_manifest.json
+experiments/*.validation.json
