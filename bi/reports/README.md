@@ -65,4 +65,38 @@ Q13–Q17 require real 0007/0008-derived schema; current production revision las
 
 See [`../README.md`](../README.md) for test/deployment commands and [`../tests/README.md`](../tests/README.md) for disposable schema coverage. Verify direct PostgreSQL results **as reader**, not only as administrator: sample raw-count corrections, one-peer insufficient benchmark, cross-category dedup, multi-day missing gaps, score revision 1→1→4, review distinct denominators, sentiment skipped/done and denial of all sensitive columns. Compare chart dates, lines, filters, descriptions and actual API dashboard-card IDs in a disposable Metabase first. No actual production dashboard, SQL query result or screenshot has been verified here.
 
-**Deferred contracts, not abandoned:** Network Benchmark needs verified PCAP metrics, capture attribution, consistent denominators, traffic and observation interval comparability; Baham/Pinno and Telegram/WhatsApp need matched network captures and clear baseline; Store × Network requires safe time/app/locale joins with separate aggregation; Release Impact Explorer requires trustworthy actual release timestamps, matching pre/post periods, observation coverage and attribution caveats. Q18 is only a Store comparison. Do not invent complaints from sentiment, release dates or PCAP observations. Manifest `deferred` records gate eventual future work; enabling these will require separate schema and acceptance tests without changing code outside `bi/` under this task.
+**Evidence-gated definitions:** Q25-Q42 and their three dashboards are implemented. They remain non-interpretable until their named schema, grant, provenance, sample-size, release-evidence and time-window gates pass. Q18 remains Store-only. Sentiment is not topic classification or evidence of a network complaint.
+
+
+## Network, cross-domain and release questions (Q25-Q42)
+
+These definitions are implemented, but their evidence remains capability-gated. Private manifests are compiled in-process into typed CTEs, then the generated SQL is persisted in Metabase Saved Questions and the private synchronization state; checked-in SQL contains an executable typed-empty relation. Only the reporting-field allowlist is compiled. See [SOURCE_CONTRACT.md](SOURCE_CONTRACT.md) for formulas, persistence/visibility boundaries and [NETWORK_CAPTURE_GUIDE.md](NETWORK_CAPTURE_GUIDE.md) for collection.
+
+| ID | Managerial question | Grain, unit and missing-data rule | Recommended view and filters |
+| --- | --- | --- | --- |
+| Q25 | What prevents Network reporting? | One readiness row; named schema/grant/data/manifest state. No data is not zero performance. | Table; no filters. |
+| Q26 | Which capture/KPI combinations are usable? | Experiment x session x app x scenario x profile x KPI; distinct total/analyzed/eligible captures and reasons. | Table; all Network filters. |
+| Q27 | What happened in each transfer trial? | One capture; Mbps, ms and byte ratio. Ineligible effective throughput is NULL; average stays separate. | Evidence table; all Network filters. |
+| Q28 | What transfer byte cost was observed? | One capture; IP bytes/file bytes and header ratio 0-1, formatted once in UI. | Table or dot plot; all Network filters. |
+| Q29 | What TCP stability evidence exists? | One capture; RTT ms, segment indicator ratios and payload recovery tax. QUIC-only is N/A. | Evidence table; all Network filters. |
+| Q30 | Which protocols/capabilities were observable? | One capture; booleans, transport byte shares and warning count. | Table; all Network filters. |
+| Q31 | What is the descriptive benchmark? | App x experiment x session x scenario x file/size x app version x device/Android x network type/profile x tool/version x phase; metric-specific n and NULL aggregate under 3. | Summary table; all Network filters. |
+| Q32 | What do validated paired trials show? | One pair_id within one allowed opaque cohort and identical experiment/session/scenario/file/device/network conditions; each side and displayed metric validated independently. | Paired table; all Network filters. |
+| Q33 | Which apps have Store, Review and Network evidence? | App x latest historical Store locale; independent aggregates, timestamps and source gap. | Coverage table; app/locale. |
+| Q34 | Do Store and Network observations align on a UTC day? | App x day x Store locale x scenario/profile. Missing side visible; not correlation. | Timeline table; app/scenario/profile/locale/date. |
+| Q35 | How do User Voice cohorts and Network evidence coexist? | App x day x scenario/profile; review score is latest observation strictly before that cohort day's UTC cutoff. | Table; app/scenario/profile/date. |
+| Q36 | What evidence exists for the two app pairs? | App x exact network experiment/session/scenario/file/device/version/network condition plus independent Store/Review context; Upload/Download are separate. | Matrix; app/pair/locale. |
+| Q37 | Is a release event analyzable? | One event; evidence, precision, verification, windows and states. | Readiness table; app/event/date. |
+| Q38 | How did controlled Network metrics differ? | Release x matched scenario/file/device/Android/network/tool conditions; separate observed/eligible/excluded counts and at least 3 per period for each metric, otherwise its delta is NULL. | Table; app/event/scenario/profile/date. |
+| Q39 | How did Store observations differ? | Release x historical locale; median daily score and signed endpoint count differences. | Table; app/event/locale/date. |
+| Q40 | How did sampled User Voice cohorts differ? | Release x locale; each period has an explicit exclusive UTC cutoff and latest observation by that cutoff. Unavailable historical sentiment remains NULL/not classified. | Table; app/event/locale/date. |
+| Q41 | Which evidence domains cover both periods? | App x release x scenario x matched network conditions after joining actual analyzed metric-eligible captures; manifest row count alone never establishes readiness. | Evidence matrix; app/event/date. |
+| Q42 | What limits interpretation? | One event; missing evidence and standing limitations. | Table; app/event/date. |
+
+## Added dashboards
+
+**Network Benchmark** orders readiness, performance, efficiency, stability, protocol and evidence sections (Q25-Q32). Filters are application, scenario, experiment, session, network profile and capture date. Without network schema/grants, only readiness remains; no cards are deleted.
+
+**Application Experience - Store x Network x User Voice** contains Q33-Q36 and the two named app pairs. Each fact source is aggregated before joining, Store locale remains visible, and there is no composite score, ranking, correlation or causal claim.
+
+**Release Impact Explorer** contains Q37-Q42. Transition dates are excluded from before/after periods. Outputs are observational. Network complaints remain unavailable without a separate validated topic-annotation source.
