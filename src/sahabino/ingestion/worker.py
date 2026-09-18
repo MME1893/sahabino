@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from time import monotonic
 from typing import Any, cast
 
 from confluent_kafka import Message
@@ -173,6 +174,7 @@ class IngestionWorker:
         if message is None:
             return False
 
+        processing_started_at = monotonic()
         message_context = self._message_context(message)
         try:
             event = decode_message(message)
@@ -182,6 +184,7 @@ class IngestionWorker:
                 **error.context,
                 "event": "ingestion.message.skipped",
                 "reason": error.reason,
+                "duration_seconds": monotonic() - processing_started_at,
             }
             logger.warning("invalid ingestion message skipped", extra=skipped_context)
             self._commit_offset(message, message_context)
@@ -223,6 +226,7 @@ class IngestionWorker:
                     "event": "ingestion.message.failed",
                     "failure_stage": "database_processing",
                     "error_type": type(error).__name__,
+                    "duration_seconds": monotonic() - processing_started_at,
                 },
             )
             raise
@@ -231,12 +235,20 @@ class IngestionWorker:
         if claimed:
             logger.info(
                 "ingestion message processed",
-                extra={**event_context, "event": "ingestion.message.processed"},
+                extra={
+                    **event_context,
+                    "event": "ingestion.message.processed",
+                    "duration_seconds": monotonic() - processing_started_at,
+                },
             )
         else:
             logger.info(
                 "duplicate ingestion message acknowledged",
-                extra={**event_context, "event": "ingestion.message.duplicate"},
+                extra={
+                    **event_context,
+                    "event": "ingestion.message.duplicate",
+                    "duration_seconds": monotonic() - processing_started_at,
+                },
             )
         return True
 

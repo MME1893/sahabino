@@ -1,0 +1,108 @@
+---
+- name: Record whether optional Grafana PostgreSQL integration is requested
+  ansible.builtin.set_fact:
+    sahabino_grafana_postgres_requested: >-
+      {{ vault_sahabino_grafana_reader_password is defined
+         and vault_sahabino_grafana_reader_password | string | length > 0 }}
+    sahabino_grafana_postgres_credential_valid: >-
+      {{ vault_sahabino_grafana_reader_password is defined
+         and vault_sahabino_grafana_reader_password is match('^[A-Za-z0-9_.@$-]{20,}$')
+         and 'CHANGE_ME' not in vault_sahabino_grafana_reader_password }}
+  no_log: true
+
+- name: Report disabled optional Grafana PostgreSQL integration with an invalid credential
+  ansible.builtin.debug:
+    msg: >-
+      OPTIONAL FEATURE DISABLED: the enrolled Grafana PostgreSQL reader credential
+      does not meet the documented safe format. The production environment was left
+      without the optional Data Source setting.
+  when:
+    - sahabino_grafana_postgres_requested | bool
+    - not (sahabino_grafana_postgres_credential_valid | bool)
+
+- name: Initialize and verify the optional Grafana PostgreSQL reader
+  when: sahabino_grafana_postgres_credential_valid | bool
+  block:
+    - name: Validate the optional Grafana reader credential contract
+      ansible.builtin.assert:
+        that:
+          - vault_sahabino_grafana_reader_password is match('^[A-Za-z0-9_.@$-]{20,}$')
+          - "'CHANGE_ME' not in vault_sahabino_grafana_reader_password"
+        fail_msg: The optional Grafana reader password does not meet the documented safe format.
+      no_log: true
+
+    - name: Create or verify the least-privilege Grafana reader idempotently
+      ansible.builtin.command:
+        argv: >-
+          {{ sahabino_compose_cli + [
+            'exec', '-T', 'postgres', 'psql', '--no-psqlrc',
+            '--username', vault_sahabino_postgres_user,
+            '--dbname', vault_sahabino_postgres_db
+          ] }}
+        chdir: "{{ sahabino_app_dir }}"
+        stdin: |-
+          \set reader_password '{{ vault_sahabino_grafana_reader_password }}'
+          \set rotate_password '{{ sahabino_grafana_reader_rotate_password | default(false) | bool | lower }}'
+          {{ lookup('ansible.builtin.file', role_path + '/files/grafana_reader.sql') }}
+        stdin_add_newline: true
+      register: sahabino_grafana_reader_setup
+      changed_when: >-
+        'GRAFANA_READER_CREATED' in sahabino_grafana_reader_setup.stdout
+        or sahabino_grafana_reader_rotate_password | default(false) | bool
+      no_log: true
+
+    - name: Verify the supplied reader credential and dashboard SELECT surface
+      ansible.builtin.command:
+        argv: "{{ sahabino_compose_cli + ['exec', '-T', 'postgres', 'sh', '-s'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+        stdin: |-
+          set -eu
+          export PGPASSWORD='{{ vault_sahabino_grafana_reader_password }}'
+          exec psql --no-psqlrc --set ON_ERROR_STOP=1 \
+            --host postgres --username grafana_reader \
+            --dbname '{{ vault_sahabino_postgres_db }}' \
+            --command 'SELECT count(id) FROM applications; SELECT count(id) FROM crawl_runs; SELECT count(id) FROM crawl_tasks; SELECT count(id) FROM reviews; SELECT count(review_id) FROM review_observations;'
+        stdin_add_newline: true
+      changed_when: false
+      no_log: true
+
+    - name: Reject a reader connection that succeeds with an intentionally wrong password
+      ansible.builtin.command:
+        argv: "{{ sahabino_compose_cli + ['exec', '-T', 'postgres', 'sh', '-s'] }}"
+        chdir: "{{ sahabino_app_dir }}"
+        stdin: |-
+          set -eu
+          if PGPASSWORD='sahabino-intentionally-wrong-auth-probe' PGPASSFILE=/dev/null \
+             psql --no-psqlrc --no-password --host postgres \
+               --username grafana_reader --dbname '{{ vault_sahabino_postgres_db }}' \
+               --command 'SELECT 1' >/dev/null 2>&1; then
+            echo 'Grafana reader connection accepted an incorrect password' >&2
+            exit 1
+          fi
+        stdin_add_newline: true
+      changed_when: false
+      no_log: true
+
+    - name: Report successful optional Grafana PostgreSQL activation
+      ansible.builtin.debug:
+        msg: Grafana PostgreSQL reader initialization and credential verification succeeded.
+
+  rescue:
+    - name: Disable PostgreSQL Data Source activation after optional setup failure
+      ansible.builtin.lineinfile:
+        path: "{{ sahabino_app_dir }}/.env"
+        regexp: '^GRAFANA_POSTGRES_PASSWORD='
+        state: absent
+      no_log: true
+
+    - name: Report the bounded optional Grafana PostgreSQL failure
+      ansible.builtin.debug:
+        msg: >-
+          OPTIONAL FEATURE DISABLED: Grafana PostgreSQL reader initialization or
+          credential verification failed. Existing application and Loki deployment
+          will continue; inspect the failed task before enabling the Data Source.
+
+- name: Report skipped optional Grafana PostgreSQL integration
+  ansible.builtin.debug:
+    msg: Optional Grafana PostgreSQL integration is disabled because no reader credential is enrolled.
+  when: not (sahabino_grafana_postgres_requested | bool)

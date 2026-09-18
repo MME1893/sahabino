@@ -405,6 +405,9 @@
             | regex_replace('\\s+\\(head\\)$', ''))
     fail_msg: The database Alembic revision does not match the checked-out code head.
 
+- name: Configure the optional least-privilege Grafana PostgreSQL reader
+  ansible.builtin.include_tasks: grafana_postgres.yml
+
 - name: Provision and verify the required Kafka topic topology
   ansible.builtin.command:
     argv: >-

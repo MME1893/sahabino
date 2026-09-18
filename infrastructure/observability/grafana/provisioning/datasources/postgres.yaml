@@ -1,0 +1,23 @@
+apiVersion: 1
+prune: true
+
+datasources:
+  - name: Sahabino PostgreSQL
+    uid: sahabino-postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: grafana_reader
+    database: $POSTGRES_DB
+    isDefault: false
+    editable: false
+    jsonData:
+      database: $POSTGRES_DB
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+      maxOpenConns: 3
+      maxIdleConns: 1
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: $GRAFANA_POSTGRES_PASSWORD

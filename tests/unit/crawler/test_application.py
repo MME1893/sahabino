@@ -508,12 +508,29 @@ def test_malformed_adapter_json_is_parse_failure_at_application_boundary(
         client.get_app("com.example.app", "en", "us")
 
 
-def test_details_and_reviews_succeed_independently() -> None:
+def test_details_and_reviews_succeed_independently(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     command, lifecycle, _, _ = _command(FakeAdapter())
 
-    _execute(command)
+    with caplog.at_level(logging.INFO, logger="sahabino.crawler.application.tasks"):
+        _execute(command)
 
     assert {task["status"] for task in lifecycle.tasks.values()} == {CrawlTaskStatus.SUCCEEDED}
+    task_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "crawler.task.succeeded"
+    ]
+    assert len(task_records) == 2
+    assert all(record.duration_seconds >= 0 for record in task_records)
+    fetch_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "crawler.review.fetch_completed"
+    )
+    assert fetch_record.review_count == 1
+    assert fetch_record.duration_seconds >= 0
 
 
 def test_details_failure_does_not_prevent_reviews() -> None:
@@ -846,7 +863,12 @@ def test_persisted_task_error_redacts_proxy_credentials(
     assert password not in caplog.text
     assert "fake-user" not in caplog.text
     assert "proxy.example" not in caplog.text
-    assert any(getattr(record, "event", None) == "crawler.task.failed" for record in caplog.records)
+    failed_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "crawler.task.failed"
+    )
+    assert failed_record.duration_seconds >= 0
 
 
 def test_local_rate_limit_failure_changes_no_proxy_circuit_or_adapter_policy() -> None:

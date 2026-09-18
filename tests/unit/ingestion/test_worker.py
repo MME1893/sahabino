@@ -316,10 +316,12 @@ def test_invalid_message_logs_skips_and_commits_without_database_work(
     assert session_factory.begin_calls == 0
     assert caplog.records[-1].event == "ingestion.message.skipped"
     assert caplog.records[-1].reason == "invalid_json"
+    assert caplog.records[-1].duration_seconds >= 0
 
 
 def test_valid_message_commits_database_before_kafka(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     events: list[str] = []
     message = _app_message()
@@ -340,9 +342,16 @@ def test_valid_message_commits_database_before_kafka(
 
     consumer.commit = record_commit
 
-    assert _worker(consumer, session_factory).process_next()
+    with caplog.at_level(logging.INFO, logger=worker_module.__name__):
+        assert _worker(consumer, session_factory).process_next()
 
     assert events == ["db.begin", "db.claim", "db.handle", "db.commit", "kafka.commit"]
+    processed_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "ingestion.message.processed"
+    )
+    assert processed_record.duration_seconds >= 0
 
 
 def test_duplicate_event_skips_handler_and_commits_offset(
@@ -396,6 +405,7 @@ def test_processing_failure_rolls_back_does_not_commit_and_is_logged(
     assert caplog.records[-1].event == "ingestion.message.failed"
     assert caplog.records[-1].failure_stage == "database_processing"
     assert caplog.records[-1].error_type == "RuntimeError"
+    assert caplog.records[-1].duration_seconds >= 0
     assert secret_content not in caplog.text
 
 

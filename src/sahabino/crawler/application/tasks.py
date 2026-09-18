@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from time import monotonic
 from uuid import UUID
 
 from sahabino.crawler.application.client import (
@@ -90,6 +91,7 @@ class ApplicationCrawlCommand:
         language_code: str,
         country_code: str,
     ) -> None:
+        started_at = monotonic()
         try:
             details = client.get_app(
                 application.package_name,
@@ -103,12 +105,29 @@ class ApplicationCrawlCommand:
                 details=details,
             )
         except CrawlerError as error:
-            self._mark_expected_failure(task_id, error, application, CrawlTaskType.APP_DETAILS)
+            self._mark_expected_failure(
+                task_id,
+                error,
+                application,
+                CrawlTaskType.APP_DETAILS,
+                duration_seconds=monotonic() - started_at,
+            )
         except Exception as error:
-            self._mark_unexpected_failure(task_id, error, application, CrawlTaskType.APP_DETAILS)
+            self._mark_unexpected_failure(
+                task_id,
+                error,
+                application,
+                CrawlTaskType.APP_DETAILS,
+                duration_seconds=monotonic() - started_at,
+            )
             raise
         else:
-            self._mark_succeeded(task_id, application, CrawlTaskType.APP_DETAILS)
+            self._mark_succeeded(
+                task_id,
+                application,
+                CrawlTaskType.APP_DETAILS,
+                duration_seconds=monotonic() - started_at,
+            )
 
     def _run_reviews(
         self,
@@ -118,7 +137,9 @@ class ApplicationCrawlCommand:
         language_code: str,
         country_code: str,
     ) -> None:
+        started_at = monotonic()
         try:
+            fetch_started_at = monotonic()
             reviews = client.get_reviews(
                 application.package_name,
                 language_code,
@@ -126,18 +147,46 @@ class ApplicationCrawlCommand:
                 self._review_limit,
                 hooks=self._hooks(task_id, application, CrawlTaskType.REVIEWS),
             )
+            logger.info(
+                "review fetch completed",
+                extra={
+                    "event": "crawler.review.fetch_completed",
+                    "review_count": len(reviews.reviews),
+                    "duration_seconds": monotonic() - fetch_started_at,
+                    "language_code": language_code,
+                    "country_code": country_code,
+                    **self._task_context(task_id, application, CrawlTaskType.REVIEWS),
+                },
+            )
             self._publisher.publish_reviews(
                 crawl_task_id=task_id,
                 application=application,
                 reviews=reviews,
             )
         except CrawlerError as error:
-            self._mark_expected_failure(task_id, error, application, CrawlTaskType.REVIEWS)
+            self._mark_expected_failure(
+                task_id,
+                error,
+                application,
+                CrawlTaskType.REVIEWS,
+                duration_seconds=monotonic() - started_at,
+            )
         except Exception as error:
-            self._mark_unexpected_failure(task_id, error, application, CrawlTaskType.REVIEWS)
+            self._mark_unexpected_failure(
+                task_id,
+                error,
+                application,
+                CrawlTaskType.REVIEWS,
+                duration_seconds=monotonic() - started_at,
+            )
             raise
         else:
-            self._mark_succeeded(task_id, application, CrawlTaskType.REVIEWS)
+            self._mark_succeeded(
+                task_id,
+                application,
+                CrawlTaskType.REVIEWS,
+                duration_seconds=monotonic() - started_at,
+            )
 
     def _hooks(
         self,
@@ -198,6 +247,8 @@ class ApplicationCrawlCommand:
         task_id: UUID,
         application: ApplicationRef,
         task_type: CrawlTaskType,
+        *,
+        duration_seconds: float | None = None,
     ) -> None:
         with self._lifecycle.transaction() as transaction:
             transaction.mark_task_succeeded(task_id)
@@ -206,6 +257,7 @@ class ApplicationCrawlCommand:
             "crawler task succeeded",
             extra={
                 "event": "crawler.task.succeeded",
+                **({"duration_seconds": duration_seconds} if duration_seconds is not None else {}),
                 **self._task_context(task_id, application, task_type),
             },
         )
@@ -216,6 +268,8 @@ class ApplicationCrawlCommand:
         error: BaseException,
         application: ApplicationRef,
         task_type: CrawlTaskType,
+        *,
+        duration_seconds: float | None = None,
     ) -> None:
         code = self._error_code(error)
         with self._lifecycle.transaction() as transaction:
@@ -227,6 +281,7 @@ class ApplicationCrawlCommand:
                 "event": "crawler.task.failed",
                 "error_code": code,
                 "error_type": type(error).__name__,
+                **({"duration_seconds": duration_seconds} if duration_seconds is not None else {}),
                 **self._task_context(task_id, application, task_type),
             },
         )
@@ -237,9 +292,17 @@ class ApplicationCrawlCommand:
         error: CrawlerError,
         application: ApplicationRef,
         task_type: CrawlTaskType,
+        *,
+        duration_seconds: float | None = None,
     ) -> None:
         try:
-            self._mark_failed(task_id, error, application, task_type)
+            self._mark_failed(
+                task_id,
+                error,
+                application,
+                task_type,
+                duration_seconds=duration_seconds,
+            )
         except Exception as finalization_error:
             raise ExceptionGroup(
                 "crawler failure and task finalization failed",
@@ -252,9 +315,17 @@ class ApplicationCrawlCommand:
         error: Exception,
         application: ApplicationRef,
         task_type: CrawlTaskType,
+        *,
+        duration_seconds: float | None = None,
     ) -> None:
         try:
-            self._mark_failed(task_id, error, application, task_type)
+            self._mark_failed(
+                task_id,
+                error,
+                application,
+                task_type,
+                duration_seconds=duration_seconds,
+            )
         except Exception as finalization_error:
             raise ExceptionGroup(
                 "application failure and task finalization failed",

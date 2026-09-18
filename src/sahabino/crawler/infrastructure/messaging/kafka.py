@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from sahabino.crawler.application.ports.publisher import CollectedEventPublisher
@@ -17,6 +18,8 @@ from sahabino.messaging.topics import (
     PLAYSTORE_APP_STATS_TOPIC,
     PLAYSTORE_REVIEW_OBSERVED_TOPIC,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KafkaCollectedEventPublisher(CollectedEventPublisher):
@@ -66,6 +69,17 @@ class KafkaCollectedEventPublisher(CollectedEventPublisher):
             for review in reviews.reviews
         )
         self._publish(messages)
+        logger.info(
+            "review batch published",
+            extra={
+                "event": "crawler.review.batch_published",
+                "crawl_task_id": crawl_task_id,
+                "application_id": application.application_id,
+                "package_name": application.package_name,
+                "record_count": len(messages),
+                "topic": PLAYSTORE_REVIEW_OBSERVED_TOPIC,
+            },
+        )
 
     def close(self) -> None:
         self._producer.close()

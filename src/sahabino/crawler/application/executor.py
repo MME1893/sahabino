@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import datetime
+from time import monotonic
 from uuid import UUID
 
 from sahabino.crawler.application.ports.lifecycle_repository import LifecycleRepository
@@ -45,6 +46,7 @@ class CrawlerService:
         *,
         scheduled_for: datetime | None = None,
     ) -> UUID:
+        started_at = monotonic()
         run_id = self._create_run(trigger_type, scheduled_for)
         run_context = {
             "crawl_run_id": run_id,
@@ -61,7 +63,11 @@ class CrawlerService:
         except Exception as error:
             logger.exception(
                 "crawl run failed while loading applications",
-                extra={"event": "crawler.run.failed", **run_context},
+                extra={
+                    "event": "crawler.run.failed",
+                    "duration_seconds": monotonic() - started_at,
+                    **run_context,
+                },
             )
             self._finish_failed_preserving(run_id, error)
             # here intentionally we just return id
@@ -113,6 +119,7 @@ class CrawlerService:
                 extra={
                     "event": "crawler.run.completed",
                     "application_count": len(applications),
+                    "duration_seconds": monotonic() - started_at,
                     **run_context,
                 },
             )
@@ -120,7 +127,11 @@ class CrawlerService:
         except Exception as error:
             logger.exception(
                 "crawl run failed",
-                extra={"event": "crawler.run.failed", **run_context},
+                extra={
+                    "event": "crawler.run.failed",
+                    "duration_seconds": monotonic() - started_at,
+                    **run_context,
+                },
             )
             self._finish_failed_preserving(run_id, error)
 

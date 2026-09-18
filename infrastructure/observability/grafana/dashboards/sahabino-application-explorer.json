@@ -1,0 +1,496 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "All-time unique review identities for the selected application.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(id) AS value FROM reviews WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid;",
+          "refId": "A"
+        }
+      ],
+      "title": "Unique reviews (all time)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "All-time persisted observations for reviews belonging to the selected application.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(o.review_id) AS value FROM review_observations o JOIN reviews r ON r.id = o.review_id WHERE r.application_id = NULLIF(${application_id:sqlstring}, '')::uuid;",
+          "refId": "A"
+        }
+      ],
+      "title": "Observations (all time)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Selected-application tasks currently marked failed and created in the dashboard range.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(id) AS value FROM crawl_tasks WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid AND status = 'failed' AND $__timeFilter(created_at);",
+          "refId": "A"
+        }
+      ],
+      "title": "Failed tasks (selected range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Most recently created task for the selected application, including actual task locale.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"Created\", task_type AS \"Task type\", status AS \"Status\", language_code AS \"Language\", country_code AS \"Country\", attempt_count AS \"Recorded attempts\" FROM crawl_tasks WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid ORDER BY created_at DESC LIMIT 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "Last crawl task",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Recent selected-application tasks without raw error messages.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS \"Created\", task_type AS \"Task type\", status AS \"Status\", attempt_count AS \"Recorded attempts\", error_code AS \"Error code\", started_at AS \"Started\", finished_at AS \"Finished\" FROM crawl_tasks WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid AND $__timeFilter(created_at) ORDER BY created_at DESC LIMIT 100;",
+          "refId": "A"
+        }
+      ],
+      "title": "Crawl history",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Current unique-review score distribution for the selected application.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "id": 6,
+      "options": {
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "pieType": "donut",
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT score::text || ' stars' AS metric, count(id) AS value FROM reviews WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid GROUP BY score ORDER BY score;",
+          "refId": "A"
+        }
+      ],
+      "title": "Current rating distribution",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Persisted observation count over time for the selected application.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('day', o.observed_at) AS \"time\", count(o.review_id) AS \"Observations\" FROM review_observations o JOIN reviews r ON r.id = o.review_id WHERE r.application_id = NULLIF(${application_id:sqlstring}, '')::uuid AND $__timeFilter(o.observed_at) GROUP BY 1 ORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "Review activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Average elapsed seconds by completion bucket and task type for the selected application.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(finished_at, '1h'), task_type AS metric, avg(EXTRACT(EPOCH FROM (finished_at - started_at))) AS value FROM crawl_tasks WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid AND $__timeFilter(finished_at) AND started_at IS NOT NULL AND finished_at IS NOT NULL GROUP BY 1, 2 ORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "title": "Average task duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Actual persisted task locales for the selected application, not a global default assumption.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT language_code AS \"Language\", country_code AS \"Country\", count(id) AS \"Tasks\" FROM crawl_tasks WHERE application_id = NULLIF(${application_id:sqlstring}, '')::uuid AND $__timeFilter(created_at) GROUP BY language_code, country_code ORDER BY 3 DESC, 1, 2;",
+          "refId": "A"
+        }
+      ],
+      "title": "Task language and country",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sahabino-postgres"
+      },
+      "description": "Available observation-level sentiment results for the selected application; missing labels remain explicit.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "id": 10,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sahabino-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT o.sentiment_status AS \"Status\", coalesce(o.sentiment_label, 'not assigned') AS \"Label\", count(o.review_id) AS \"Observations\" FROM review_observations o JOIN reviews r ON r.id = o.review_id WHERE r.application_id = NULLIF(${application_id:sqlstring}, '')::uuid GROUP BY o.sentiment_status, o.sentiment_label ORDER BY 1, 2;",
+          "refId": "A"
+        }
+      ],
+      "title": "Sentiment status and label",
+      "type": "table"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 41,
+  "tags": [
+    "sahabino",
+    "postgresql",
+    "applications"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "sahabino-postgres"
+        },
+        "definition": "SELECT name AS __text, id::text AS __value FROM applications WHERE is_active IS TRUE ORDER BY name",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Application",
+        "multi": false,
+        "name": "application_id",
+        "options": [],
+        "query": "SELECT name AS __text, id::text AS __value FROM applications WHERE is_active IS TRUE ORDER BY name",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Sahabino Application Explorer",
+  "uid": "sahabino-application-explorer",
+  "version": 1
+}
