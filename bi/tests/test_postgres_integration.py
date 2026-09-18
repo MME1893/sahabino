@@ -1,5 +1,6 @@
 """Executable PostgreSQL SQL/authorization tests. Never use production DB."""
 
+import copy
 import json
 import re
 import shutil
@@ -13,6 +14,17 @@ import pytest
 BI = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BI / "scripts"))
 from metabase_sync import render_unfiltered
+from metadata import render_sql, validate_experiment, validate_release
+
+EXPERIMENT = validate_experiment(BI / "tests" / "fixtures" / "experiment_manifest.json")
+RELEASE = validate_release(BI / "tests" / "fixtures" / "release_manifest.json")
+CAPABILITIES = {
+    "network_state": "NETWORK_COMPARISON_READY",
+    "experiment_state": "VERIFIED_EXPERIMENT_AVAILABLE",
+    "release_state": "VERIFIED_RELEASE_METADATA_AVAILABLE",
+    "sentiment_state": "SENTIMENT_UNAVAILABLE",
+    "topic_state": "ANNOTATIONS_UNAVAILABLE",
+}
 
 
 def docker(*args, stdin=None, check=True):
@@ -58,6 +70,11 @@ def pg():
             time.sleep(1)
         else:
             pytest.fail("Disposable PostgreSQL readiness timed out")
+        # Official image can expose its bootstrap server immediately before the
+        # final postmaster handoff; avoid racing that isolated-container restart.
+        import time
+
+        time.sleep(2)
 
         def admin(db, sql):
             return docker(
@@ -112,9 +129,9 @@ def reader(pg, sql, check=True):
     )
 
 
-def rows(pg, n, replace=None):
+def rows(pg, n, replace=None, experiment=EXPERIMENT, release=RELEASE, capabilities=CAPABILITIES):
     file = next((BI / "questions").glob(f"q{n:02d}_*.sql"))
-    sql = file.read_text()
+    sql = render_sql(file.read_text(), experiment, release, capabilities)
     if replace:
         for key, val in replace.items():
             pattern = r"\[\[([^\[\]]*\{\{" + re.escape(key) + r"\}\}[^\[\]]*)\]\]"
@@ -135,8 +152,181 @@ def rows(pg, n, replace=None):
 
 
 def test_every_question_base_as_reader(pg):
-    for n in list(range(1, 13)) + list(range(18, 25)):
+    for n in list(range(1, 13)) + list(range(18, 43)):
         assert isinstance(rows(pg, n), list), f"Q{n:02} did not execute as reader"
+
+
+def test_network_release_and_cross_domain_values(pg):
+    readiness = rows(pg, 25)[0]
+    assert readiness["manifest_capture_count"] == 9
+    assert readiness["network_state"] == "NETWORK_COMPARISON_READY"
+    coverage = rows(pg, 26)
+    assert any(x["eligible_capture_count"] >= 3 for x in coverage)
+    trials = rows(pg, 27, {"application": "ir.android.baham"})
+    assert len(trials) == 6 and all(x["throughput_eligibility"] == "eligible" for x in trials)
+    assert all(float(x["total_transfer_amplification_ratio"]) == 1.1 for x in rows(pg, 28))
+    assert all(
+        float(x["tcp_retransmitted_payload_share_recovery_tax"]) == 0.005 for x in rows(pg, 29)
+    )
+    assert all(x["protocol_capability_status"] == "tcp_observed" for x in rows(pg, 30))
+    summary = rows(pg, 31)
+    baham_before = next(
+        x
+        for x in summary
+        if x["application_package"] == "ir.android.baham"
+        and x["experiment_id"] == "11111111-1111-4111-8111-111111111111"
+    )
+    assert baham_before["n_valid"] == 3
+    assert float(baham_before["median_per_capture_effective_file_throughput_mbps"]) == 20
+    assert baham_before["comparison_status"] == "descriptive_only_3_to_5"
+    paired = rows(pg, 32)
+    assert len(paired) == 3 and all(
+        x["pair_status"] == "descriptive_paired_observation" for x in paired
+    )
+    assert len(rows(pg, 33)) >= 2 and len(rows(pg, 34)) >= 1
+    assert len(rows(pg, 35)) >= 1 and len(rows(pg, 36)) >= 3
+    assert rows(pg, 37)[0]["release_readiness"] == "release_metadata_ready_observational_only"
+    release_net = rows(pg, 38)[0]
+    assert release_net["before_n"] == 3 and release_net["after_n"] == 3
+    assert float(release_net["effective_mbps_after_minus_before"]) == 5
+    store_release = rows(pg, 39)
+    assert any(
+        x["before_observed_days"] >= 1 and x["after_observed_days"] >= 1 for x in store_release
+    )
+    user_voice = rows(pg, 40)
+    assert user_voice and user_voice[0]["before_classified_sentiment_reviews"] is None
+    assert rows(pg, 41)[0]["network_before_n"] == 3
+    assert "network_complaint_topics_unavailable" in rows(pg, 42)[0]["exclusions"]
+
+
+def test_condition_metric_release_and_historical_regressions(pg):
+    _, admin = pg
+    split_conditions = copy.deepcopy(EXPERIMENT)
+    split_conditions.records = [
+        copy.deepcopy(row)
+        for row in EXPERIMENT.records
+        if row["application_package"] == "ir.android.baham"
+        and row["experiment_id"] == "11111111-1111-4111-8111-111111111111"
+    ]
+    for index, row in enumerate(split_conditions.records, 1):
+        row["pair_id"] = None
+        row["comparison_cohort_id"] = None
+        row["device_model"] = f"Synthetic Device {index}"
+    split = rows(pg, 31, experiment=split_conditions)
+    assert len(split) == 3
+    assert all(row["n_valid"] == 1 for row in split)
+    assert all(row["median_per_capture_effective_file_throughput_mbps"] is None for row in split)
+
+    followup_ids = [
+        "10000000-0000-0000-0000-000000000004",
+        "10000000-0000-0000-0000-000000000005",
+        "10000000-0000-0000-0000-000000000006",
+    ]
+    quoted = ",".join("'" + value + "'" for value in followup_ids)
+    mixed_scenarios = copy.deepcopy(EXPERIMENT)
+    for row in mixed_scenarios.records:
+        if row["capture_id"] in followup_ids:
+            row["scenario"] = "download"
+            row["experiment_id"] = "11111111-1111-4111-8111-111111111111"
+            row["app_version"] = "1.0"
+            row["experiment_phase"] = "baseline"
+    try:
+        admin(
+            "sahabino",
+            f"UPDATE network_captures SET scenario='download' WHERE id IN ({quoted});"
+            f"UPDATE network_analysis_results SET scenario='download' WHERE capture_id IN ({quoted});",
+        )
+        condition_rows = [
+            row
+            for row in rows(pg, 36, experiment=mixed_scenarios)
+            if row["package_name"] == "ir.android.baham" and row["scenario"]
+        ]
+        assert {row["scenario"] for row in condition_rows} == {"upload", "download"}
+        assert all(row["comparison_ready_n"] == 3 for row in condition_rows)
+    finally:
+        admin(
+            "sahabino",
+            f"UPDATE network_captures SET scenario='upload' WHERE id IN ({quoted});"
+            f"UPDATE network_analysis_results SET scenario='upload' WHERE capture_id IN ({quoted});",
+        )
+
+    ineligible_ids = [
+        "10000000-0000-0000-0000-000000000002",
+        "10000000-0000-0000-0000-000000000003",
+        "10000000-0000-0000-0000-000000000005",
+        "10000000-0000-0000-0000-000000000006",
+    ]
+    ineligible_quoted = ",".join("'" + value + "'" for value in ineligible_ids)
+    try:
+        admin(
+            "sahabino",
+            f"UPDATE network_captures SET transfer_file_size_bytes=999999 WHERE id IN ({ineligible_quoted});",
+        )
+        gated = rows(pg, 38)[0]
+        assert gated["before_observed_n"] == 3 and gated["after_observed_n"] == 3
+        for metric in ("throughput", "amplification", "recovery"):
+            assert gated[f"before_{metric}_eligible_n"] == 1
+            assert gated[f"after_{metric}_eligible_n"] == 1
+        assert gated["effective_mbps_after_minus_before"] is None
+        assert gated["amplification_after_minus_before"] is None
+        assert gated["tcp_recovery_tax_after_minus_before"] is None
+        assert rows(pg, 41)[0]["evidence_matrix_status"] == "network_metric_period_insufficient"
+    finally:
+        admin(
+            "sahabino",
+            f"UPDATE network_captures SET transfer_file_size_bytes=1000000 WHERE id IN ({ineligible_quoted});",
+        )
+
+    absent = copy.deepcopy(EXPERIMENT)
+    absent.records = []
+    for index, row in enumerate(EXPERIMENT.records[:6], 1):
+        clone = copy.deepcopy(row)
+        clone["capture_id"] = str(uuid.UUID(int=0x70000000000040008000000000000000 + index))
+        absent.records.append(clone)
+    no_analysis = rows(pg, 41, experiment=absent)[0]
+    assert no_analysis["network_before_manifest_n"] == 3
+    assert no_analysis["network_before_observed_n"] == 0
+    assert no_analysis["network_before_analyzed_n"] == 0
+    assert no_analysis["before_throughput_eligible_n"] == 0
+    assert no_analysis["evidence_matrix_status"] != "multi_source_descriptive_evidence_available"
+
+    early_cutoff = copy.deepcopy(RELEASE)
+    early_cutoff.records[0]["baseline_end"] = early_cutoff.records[0]["baseline_start"]
+    historical = rows(pg, 40, release=early_cutoff)[0]
+    assert abs(float(historical["before_mean_sampled_review_stars"]) - (8 / 3)) < 0.000001
+    cohort_day = next(
+        row
+        for row in rows(pg, 35)
+        if row["package_name"] == "ir.android.baham" and row["utc_day"] == "2026-09-01"
+    )
+    assert abs(float(cohort_day["mean_sampled_review_stars_1_to_5"]) - (8 / 3)) < 0.000001
+
+
+def test_network_sensitive_columns_and_write_denied(pg):
+    assert (
+        reader(pg, "SELECT object_key FROM public.network_captures;", check=False).returncode != 0
+    )
+    assert (
+        reader(pg, "SELECT original_filename FROM public.network_captures;", check=False).returncode
+        != 0
+    )
+    assert (
+        reader(pg, "SELECT error_message FROM public.network_captures;", check=False).returncode
+        != 0
+    )
+    assert (
+        reader(
+            pg, "SELECT analysis_warnings FROM public.network_analysis_results;", check=False
+        ).returncode
+        != 0
+    )
+    assert reader(pg, "SELECT * FROM public.network_captures;", check=False).returncode != 0
+    assert (
+        reader(
+            pg, "UPDATE public.network_captures SET status='failed' WHERE false;", check=False
+        ).returncode
+        != 0
+    )
 
 
 def test_store_grains_fixture_locale_precision_and_changes(pg):
@@ -351,6 +541,11 @@ def test_sentiment_optional_migration_and_privacy(pg):
     assert not any(
         x["sentiment_label"] == "negative" for x in d
     )  # latest review score was revised, label updated
+    release_voice = rows(
+        pg, 40, capabilities={**CAPABILITIES, "sentiment_state": "SENTIMENT_DATA_AVAILABLE"}
+    )
+    assert sum(x["before_classified_sentiment_reviews"] for x in release_voice) == 2
+    assert sum(x["before_historical_sentiment_unavailable_reviews"] for x in release_voice) == 1
     assert (
         reader(pg, "SELECT content FROM public.review_observations;", check=False).returncode != 0
     )

@@ -30,3 +30,32 @@ CREATE TABLE public.review_observations(crawl_task_id uuid NOT NULL REFERENCES c
  position smallint NOT NULL,score smallint NOT NULL CHECK(score BETWEEN 1 AND 5),
  thumbs_up_count bigint NOT NULL,source_adapter text NOT NULL,
  PRIMARY KEY(crawl_task_id,review_id));
+-- BI dependency subset of migration 20260912_0004; no sensitive values are seeded.
+CREATE TABLE public.network_captures(
+ id uuid PRIMARY KEY,application_id uuid NOT NULL REFERENCES applications(id),scenario text NOT NULL,
+ original_filename text NOT NULL DEFAULT 'PRIVATE',capture_format text NOT NULL DEFAULT 'pcapng',
+ content_type text NOT NULL DEFAULT 'application/octet-stream',object_key text NOT NULL DEFAULT 'PRIVATE',
+ expected_sha256 text NOT NULL DEFAULT repeat('0',64),verified_sha256 text,
+ capture_size_bytes bigint NOT NULL,transfer_file_size_bytes bigint NOT NULL,status text NOT NULL,
+ created_at timestamptz NOT NULL,uploaded_at timestamptz,analysis_finished_at timestamptz,
+ error_code text,error_message text);
+CREATE TABLE public.network_analysis_results(
+ capture_id uuid PRIMARY KEY REFERENCES network_captures(id),application_id uuid NOT NULL REFERENCES applications(id),
+ package_name text NOT NULL,scenario text NOT NULL,analyzed_at timestamptz NOT NULL,
+ verified_sha256 text NOT NULL DEFAULT repeat('0',64),analysis_warnings jsonb NOT NULL DEFAULT '[]',
+ quic_versions_seen jsonb,capture_duration_ms double precision NOT NULL,truncated_packet_count bigint NOT NULL,
+ analysis_warning_count bigint NOT NULL,direction_metadata_available boolean NOT NULL,
+ handshake_observed boolean NOT NULL,tcp_present boolean NOT NULL,quic_present boolean NOT NULL,
+ other_udp_present boolean NOT NULL,tcp_rtt_available boolean NOT NULL,
+ quic_initial_rtt_available boolean NOT NULL,quic_spin_rtt_available boolean NOT NULL,
+ dns_metrics_available boolean NOT NULL,comparison_ready boolean NOT NULL,
+ network_bytes_total bigint NOT NULL,ip_transport_header_bytes bigint NOT NULL,
+ observed_primary_payload_span_ms double precision,average_network_throughput_mbps double precision,
+ effective_file_throughput_mbps double precision,total_transfer_amplification_ratio double precision NOT NULL,
+ primary_direction_amplification_ratio double precision,reverse_path_cost_ratio double precision,
+ ip_transport_header_overhead_ratio double precision,tcp_byte_share double precision,
+ quic_byte_share double precision,other_udp_byte_share double precision,tcp_connection_count bigint,
+ tcp_handshake_success_rate double precision,tcp_initial_rtt_avg_ms double precision,
+ tcp_initial_rtt_p50_ms double precision,tcp_ack_rtt_p95_ms double precision,
+ tcp_retransmission_count bigint,tcp_retransmission_rate double precision,tcp_recovery_tax double precision,
+ tcp_receiver_stall_ratio double precision,tcp_reset_rate double precision);

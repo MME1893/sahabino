@@ -70,3 +70,34 @@ INSERT INTO review_observations VALUES
 ('00000000-0000-0000-0000-000000002002',101,'2026-09-02 10:00Z',1,1,0,'synthetic'),
 ('00000000-0000-0000-0000-000000002003',101,'2026-09-03 10:00Z',1,4,0,'synthetic'),
 ('00000000-0000-0000-0000-000000002004',103,'2026-09-04 10:00Z',1,5,0,'synthetic');
+INSERT INTO network_captures(id,application_id,scenario,capture_size_bytes,transfer_file_size_bytes,status,created_at,uploaded_at,analysis_finished_at) VALUES
+('10000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001','upload',1100000,1000000,'analyzed','2026-09-01 08:00Z','2026-09-01 08:02Z','2026-09-01 08:03Z'),
+('10000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000001','upload',1100000,1000000,'analyzed','2026-09-02 08:00Z','2026-09-02 08:02Z','2026-09-02 08:03Z'),
+('10000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000001','upload',1100000,1000000,'analyzed','2026-09-03 08:00Z','2026-09-03 08:02Z','2026-09-03 08:03Z'),
+('10000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-000000000001','upload',1100000,1000000,'analyzed','2026-09-05 08:00Z','2026-09-05 08:02Z','2026-09-05 08:03Z'),
+('10000000-0000-0000-0000-000000000005','00000000-0000-0000-0000-000000000001','upload',1100000,1000000,'analyzed','2026-09-06 08:00Z','2026-09-06 08:02Z','2026-09-06 08:03Z'),
+('10000000-0000-0000-0000-000000000006','00000000-0000-0000-0000-000000000001','upload',1100000,1000000,'analyzed','2026-09-07 08:00Z','2026-09-07 08:02Z','2026-09-07 08:03Z'),
+('20000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000002','upload',1100000,1000000,'analyzed','2026-09-01 09:00Z','2026-09-01 09:02Z','2026-09-01 09:03Z'),
+('20000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-000000000002','upload',1100000,1000000,'analyzed','2026-09-02 09:00Z','2026-09-02 09:02Z','2026-09-02 09:03Z'),
+('20000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000002','upload',1100000,1000000,'analyzed','2026-09-03 09:00Z','2026-09-03 09:02Z','2026-09-03 09:03Z');
+INSERT INTO network_analysis_results(capture_id,application_id,package_name,scenario,analyzed_at,
+ capture_duration_ms,truncated_packet_count,analysis_warning_count,direction_metadata_available,
+ handshake_observed,tcp_present,quic_present,other_udp_present,tcp_rtt_available,
+ quic_initial_rtt_available,quic_spin_rtt_available,dns_metrics_available,comparison_ready,
+ network_bytes_total,ip_transport_header_bytes,observed_primary_payload_span_ms,
+ average_network_throughput_mbps,effective_file_throughput_mbps,total_transfer_amplification_ratio,
+ primary_direction_amplification_ratio,reverse_path_cost_ratio,ip_transport_header_overhead_ratio,
+ tcp_byte_share,quic_byte_share,other_udp_byte_share,tcp_connection_count,tcp_handshake_success_rate,
+ tcp_initial_rtt_avg_ms,tcp_initial_rtt_p50_ms,tcp_ack_rtt_p95_ms,tcp_retransmission_count,
+ tcp_retransmission_rate,tcp_recovery_tax,tcp_receiver_stall_ratio,tcp_reset_rate)
+SELECT id,application_id,CASE WHEN application_id='00000000-0000-0000-0000-000000000001' THEN 'ir.android.baham' ELSE 'app.pinno' END,
+ scenario,analysis_finished_at,1000,0,0,true,true,true,false,false,true,false,false,true,true,
+ 1100000,100000,800,
+ CASE substring(id::text,1,1) WHEN '1' THEN 9 ELSE 8 END,
+ CASE id::text
+  WHEN '10000000-0000-0000-0000-000000000001' THEN 10 WHEN '10000000-0000-0000-0000-000000000002' THEN 20
+  WHEN '10000000-0000-0000-0000-000000000003' THEN 30 WHEN '10000000-0000-0000-0000-000000000004' THEN 15
+  WHEN '10000000-0000-0000-0000-000000000005' THEN 25 WHEN '10000000-0000-0000-0000-000000000006' THEN 35
+  WHEN '20000000-0000-0000-0000-000000000001' THEN 8 WHEN '20000000-0000-0000-0000-000000000002' THEN 18 ELSE 28 END,
+ 1.1,1.05,0.05,0.090909,0.95,0,0,2,1.0,20,19,35,1,0.01,0.005,0,0
+FROM network_captures;
