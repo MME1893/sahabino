@@ -270,7 +270,10 @@ def test_condition_metric_release_and_historical_regressions(pg):
         assert gated["effective_mbps_after_minus_before"] is None
         assert gated["amplification_after_minus_before"] is None
         assert gated["tcp_recovery_tax_after_minus_before"] is None
-        assert rows(pg, 41)[0]["evidence_matrix_status"] != "multi_source_descriptive_evidence_available"
+        assert (
+            rows(pg, 41)[0]["evidence_matrix_status"]
+            != "multi_source_descriptive_evidence_available"
+        )
     finally:
         admin(
             "sahabino",
@@ -306,12 +309,18 @@ def test_q41_network_optional_and_historical_locale_gate(pg):
     _, admin = pg
     no_schema_capabilities = {**CAPABILITIES, "network_state": "NETWORK_SCHEMA_MISSING"}
     try:
-        admin("sahabino", "ALTER TABLE public.network_analysis_results RENAME TO network_analysis_results_hidden; ALTER TABLE public.network_captures RENAME TO network_captures_hidden;")
+        admin(
+            "sahabino",
+            "ALTER TABLE public.network_analysis_results RENAME TO network_analysis_results_hidden; ALTER TABLE public.network_captures RENAME TO network_captures_hidden;",
+        )
         base_rows = rows(pg, 41, capabilities=no_schema_capabilities)
         assert base_rows
         assert all(row["network_before_n"] is None for row in base_rows)
     finally:
-        admin("sahabino", "ALTER TABLE public.network_captures_hidden RENAME TO network_captures; ALTER TABLE public.network_analysis_results_hidden RENAME TO network_analysis_results;")
+        admin(
+            "sahabino",
+            "ALTER TABLE public.network_captures_hidden RENAME TO network_captures; ALTER TABLE public.network_analysis_results_hidden RENAME TO network_analysis_results;",
+        )
 
     revoke_columns = """
 DO $block$ DECLARE item record; BEGIN
@@ -404,7 +413,10 @@ END $block$;
         assert compatible["store_review_locale_status"] == "same_locale_review_cohort_ready"
         assert compatible["evidence_matrix_status"] == "multi_source_descriptive_evidence_available"
     finally:
-        admin("sahabino", "DELETE FROM review_observations WHERE review_id=199; DELETE FROM reviews WHERE id=199; DELETE FROM crawl_tasks WHERE id='00000000-0000-0000-0000-000000002099';")
+        admin(
+            "sahabino",
+            "DELETE FROM review_observations WHERE review_id=199; DELETE FROM reviews WHERE id=199; DELETE FROM crawl_tasks WHERE id='00000000-0000-0000-0000-000000002099';",
+        )
 
 
 def test_network_sensitive_columns_and_write_denied(pg):

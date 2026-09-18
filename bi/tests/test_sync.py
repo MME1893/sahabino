@@ -157,9 +157,7 @@ class FakeAPI:
                 value = (
                     self.sentiment
                     if "sentiment_" in query
-                    else (
-                        self.network if self.network_grants is None else self.network_grants
-                    )
+                    else (self.network if self.network_grants is None else self.network_grants)
                     if "network_" in query
                     else True
                 )
@@ -416,8 +414,7 @@ def test_network_loss_preserves_every_existing_managed_object_identity(tmp_path)
     assert after == before
     second = run_sync(api, state, True)
     assert all(
-        action[0] in {"SKIP", "SKIP_CAPABILITY", "SKIP_CAPABILITY_PRESERVE"}
-        for action in second
+        action[0] in {"SKIP", "SKIP_CAPABILITY", "SKIP_CAPABILITY_PRESERVE"} for action in second
     )
 
 

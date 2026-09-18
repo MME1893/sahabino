@@ -168,8 +168,8 @@ class HTTPAPI:
             allow_remote and u.scheme == "https"
         ):
             raise SyncError(
-                "Only loopback allowed by default; remote "\
-                    "requires explicit --allow-remote with HTTPS"
+                "Only loopback allowed by default; remote "
+                "requires explicit --allow-remote with HTTPS"
             )
         if u.scheme not in ("http", "https"):
             raise SyncError("Invalid API endpoint scheme")

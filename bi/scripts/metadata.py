@@ -713,9 +713,7 @@ def render_sql(text, experiment, release, capabilities):
   NULL::bigint before_recovery_eligible_n,NULL::bigint after_recovery_eligible_n,
   NULL::timestamptz network_latest_source_at WHERE false
 )"""
-    rendered = _optional_block(
-        rendered, OPTIONAL_NETWORK_MARKERS, network_available, empty_network
-    )
+    rendered = _optional_block(rendered, OPTIONAL_NETWORK_MARKERS, network_available, empty_network)
     sentiment_columns = (
         "ro.sentiment_status::text AS sentiment_status, "
         "ro.sentiment_label::text AS sentiment_label, "
