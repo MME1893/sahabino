@@ -8,6 +8,13 @@ Routine runtime operations should normally be performed as the `sahabino`
 deployment user. Commands that inspect root-only deployment state, systemd, or
 protected backups use `sudo` explicitly.
 
+For **full, evidence-based production acceptance**, including exact-run crawler
+output, Kafka offsets, network analyses, standalone sentiment, Metabase, Grafana
+and a PASS/FAIL/NOT RUN record, use
+[`PRODUCTION_ACCEPTANCE.md`](PRODUCTION_ACCEPTANCE.md). This document remains
+the day-to-day operations reference; the acceptance guide separates
+observation-only commands from approved state-changing tests.
+
 ## Enter the production checkout
 
 ```bash
@@ -128,7 +135,10 @@ scompose up -d
 > Grafana, Loki, and SeaweedFS state.
 
 For source/configuration releases, migrations, or new images, use the deployment
-assistant instead of manually assembling a release sequence.
+assistant instead of manually assembling a release sequence. Recreating the main
+PostgreSQL container may also drop its **manually attached** external Metabase
+network membership; after an approved recreation, verify/reattach that
+membership using the separate [`bi/README.md`](../../bi/README.md).
 
 ## Restart/recreate one service
 
@@ -160,8 +170,12 @@ sudo /opt/sahabino/app/deploy/ansible/sahabino-deploy.sh --verify
 It validates permissions, running services, Kafka health, API/Loki/Grafana and
 SeaweedFS readiness, the SeaweedFS process/secret contract, TShark, the live
 analyzer Kafka member, database counts, crawler status, ingestion lag, log
-markers, and project container resources. It is read-only and does not run the
-synthetic network smoke workflow.
+markers, and project container resources. **`--verify` does not deploy or run a
+synthetic network smoke, but when invoked as root it can normalize tracked
+checkout file modes (`chmod`). It is not strictly read-only.** Use the
+observation-only first stages of the acceptance guide when mutation of any
+kind is disallowed. Deployment verification still does not exercise every
+Metabase/Grafana card or complete a controlled production crawl.
 
 ## HTTP/readiness checks
 

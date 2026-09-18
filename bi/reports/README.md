@@ -1,8 +1,8 @@
 # BI reporting catalog and semantic contract
 
-**Implemented as version-controlled SQL and OSS Metabase manifest; NOT verified as deployed.** Files `../questions/q01_*.sql` through `q24_*.sql` are selected through `../manifest/content.json`. The actual Metabase data source must be named `Sahabino BI Source` and use the column-restricted reader. No raw personal review text, author, external review ID, full individual review record, inferred model version, made-up release/event, or PCAP data is surfaced. Historical crawl locale is always from the exact related `crawl_tasks` record. Category is the **current** primary registry category (no historical category table). MyRightel fixture `ir.rightel.myrightel` is excluded from every product-facing result **and peer cohort**, not deleted from source.
+**Implemented as version-controlled SQL and an OSS Metabase manifest; deployment must be verified separately.** All `../questions/q01_*.sql` through `q42_*.sql` are selected through `../manifest/content.json`. The manifest defines **42 questions, 3 collections, 7 dashboards and 45 card placements**. Optional capability gates mean the number actually deployed can be smaller. The actual Metabase data source must be named `Sahabino BI Source` and use the column-restricted reader. No raw personal review text, author, external review ID, full individual review record, inferred model version, made-up release/event, or PCAP data is surfaced. Historical crawl locale is always from the exact related `crawl_tasks` record. Category is the **current** primary registry category (no historical category table). MyRightel fixture `ir.rightel.myrightel` is excluded from every product-facing result **and peer cohort**, not deleted from source.
 
-## Saved Questions (24)
+## Saved questions (42 total; foundational Q01–Q24)
 
 | ID | Name / purpose | Grain and relevant context |
 | --- | --- | --- |
@@ -33,7 +33,7 @@
 
 Every question has a descriptive manifest `description`, a stable logical `key`, a read-only SQL file and a visualization setting. Q04 is a table to avoid mixing unlike measures into a single falsely comparable chart. Charts have explicitly named date axes and units where used. Raw score precision is preserved in SQL; UI may format for readability. 15-product dashboard usability requires actual large-sample UI validation (not proven in this environment).
 
-## Four dashboard definitions
+## Foundational and sentiment dashboards (4 of 7)
 
 **Executive Portfolio:** 6 compact cards covering totals and missing snapshot coverage (Q06), snapshot inventory (Q01), latest ratings (Q22), category summary (Q07), recent changes (Q08), explicit investigation signals (Q09). Present missing data and all actual timeframe/age fields. No aggregate quality or risk score.
 
@@ -55,7 +55,7 @@ Dashboard grids/positions and per-card template tag mappings live in the manifes
 
 ## Sentiment semantics and missingness
 
-Q13–Q17 require real 0007/0008-derived schema; current production revision last reported as 0006, **not verified changed**. The ingestion/worker contract stores sentiment status, label and language on `review_observations`, may reuse analysis for identical content and can record a different label for a revised review. There is no persisted reliable model-version provenance. These reports deliberately measure **latest-known review-level sentiment at observation cutoff**, NOT independent sentiment-event frequency or distinct review-version prevalence; one eligible observation per review, not number of `done` rows.
+Q13–Q17 require schema introduced by migration `20260917_0007` and the necessary reader grants; `20260917_0008` adds a supporting review-ID index and is this checkout's Alembic head. Check the *actual* VPS revision; historical reports of `0006` are not evidence of the current deployment. The ingestion/worker contract stores sentiment status, label and language on `review_observations`, may reuse analysis for identical content and can record a different label for a revised review. There is no persisted reliable model-version provenance. These reports deliberately measure **latest-known review-level sentiment at observation cutoff**, NOT independent sentiment-event frequency or distinct review-version prevalence; one eligible observation per review, not number of `done` rows.
 
 - Pipeline statuses: `pending`, `done`, `skipped`, `failed` counts in Q13 use latest eligible observation for each distinct review. `done` with null/invalid label is **not** a classified result. Coverage = count(`done` AND label ∈ {positive,neutral,negative}) / all eligible unique reviews. Historic migration `skipped` stays missing and is never recoded as neutral or negative.
 - Q14 share for each label = unique classified reviews with that label / *only* unique `done` reviews with a valid label (within the same app/locale cohort). Negative sentiment share is the same valid denominator with label negative; Q15 shows this share by *first-observed date cohort*, with `NULL` if classified denominator zero. Shares are not scaled to percentage points in SQL; a UI percentage format may multiply by 100 **for display**.
@@ -93,10 +93,20 @@ These definitions are implemented, but their evidence remains capability-gated. 
 | Q41 | Which evidence domains cover both periods? | App x release x historical Store country/language x optional scenario/matched Network conditions. Store readiness requires observations in both periods for the same crawl locale; Review evidence is joined only at that locale. Network SQL is compiled out when its schema or grants are unavailable, while the base Store/Review matrix remains provisionable. Manifest row count alone never establishes Network readiness. | Evidence matrix; app/event/date. |
 | Q42 | What limits interpretation? | One event; missing evidence and standing limitations. | Table; app/event/date. |
 
-## Added dashboards
+## Network, experience and release dashboards (remaining 3 of 7)
 
 **Network Benchmark** orders readiness, performance, efficiency, stability, protocol and evidence sections (Q25-Q32). Filters are application, scenario, experiment, session, network profile and capture date. Without network schema/grants, only readiness remains; no cards are deleted.
 
 **Application Experience - Store x Network x User Voice** contains Q33-Q36 and the two named app pairs. Each fact source is aggregated before joining, Store locale remains visible, and there is no composite score, ranking, correlation or causal claim.
 
 **Release Impact Explorer** contains Q37-Q42. Transition dates are excluded from before/after periods. Outputs are observational. Network complaints remain unavailable without a separate validated topic-annotation source.
+
+**Acceptance:** Do not equate manifest membership with successful deployment,
+correct queries or visual results. Run the read-only `plan`, check the final
+status of each *eligible* managed object and execute every available card with
+its filters as described in
+[production acceptance](../../docs/operations/PRODUCTION_ACCEPTANCE.md) and the
+[BI operations runbook](RUNBOOK.md). The three network/experience/release
+dashboards comprise 8, 4 and 6 cards respectively; without validated capture
+and release evidence these are readiness/coverage views, not demonstrated
+application-performance or release-impact results.

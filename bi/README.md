@@ -6,10 +6,20 @@
 
 - Official Metabase OSS `v0.63.18`, pinned by repository-supplied digest in `compose.yml` (retain the full `@sha256` reference); no custom Dockerfile. Host port bound to `127.0.0.1` only; intended access via SSH forwarding, never a public firewall rule.
 - PostgreSQL source `sahabino`: minimal column-specific `sahabino_bi_reader`. Separate metadata database `metabase_app`, owned by writable `metabase_app`. An independent, manually created external BI-only Docker bridge connects to the **existing** source PostgreSQL container with alias `sahabino-postgres-bi`.
-- 42 read-only PostgreSQL report queries, 3 collections, 42 saved-question definitions and 7 dashboards (`manifest/content.json`). Q13-Q17 remain sentiment-conditional; q26-q36/q38 are network-schema/grant gated. Readiness cards remain available without experiment/release data and never claim benchmark readiness.
+- 42 read-only PostgreSQL report queries, 3 collections, 42 saved-question definitions,
+  7 dashboards and 45 card placements (`manifest/content.json`). Q13-Q17 remain sentiment-conditional; q26-q36/q38 are network-schema/grant gated. Readiness cards remain available without experiment/release data and never claim benchmark readiness.
 - `scripts/network_attach.py` (explicit attach), `scripts/preflight.py` (read-only audit), `scripts/validate.py` (offline shape check), `scripts/manifest_tool.py` (private metadata validation), and `scripts/metabase_sync.py plan|apply` (API content life-cycle). `docker compose up` **never runs** content synchronization.
 
-**Acceptance boundary:** The checked-in stdlib harness was run against an isolated `postgres:16-alpine` container with `--network none` and no published port; this is not production verification. No authorized Metabase or production source was accessed. The local environment lacked pytest, so the pytest suite was not run as a suite; an equivalent mock apply/idempotence/network-gating smoke was executed. Before production apply, run the complete tests and validate actual pinned-version API payloads on an isolated Metabase. `plan` makes API GETs and `POST /api/dataset` read-only SQL SELECTs; it never issues collection/card/dashboard writes. `apply` is explicitly invoked, not startup-triggered.
+**Acceptance boundary:** Version-controlled files, offline validation and
+synthetic/mocked tests are not proof of a running production installation. Before
+an approved `apply`, run tests on a disposable host and verify the exact pinned
+Metabase API on an isolated instance. On the actual VPS use
+[production acceptance](../docs/operations/PRODUCTION_ACCEPTANCE.md) and the
+[detailed BI runbook](reports/RUNBOOK.md). `plan` makes API GET calls and may
+execute SQL `SELECT` via `/api/dataset`; it does not write Metabase collections,
+questions or dashboards. `apply` is explicit and changes content definitions;
+it is not a data-refresh action. Record real execution outcomes; never treat
+skipped Docker/SQL/API checks as passed.
 
 ## 1. Independent prerequisites and files
 
@@ -171,10 +181,18 @@ docker exec -i "$PG_CONTAINER_ID" pg_restore -U postgres -d NEW_EMPTY_METADATA_D
 
 Do a regular *actual restore drill*. Never `pg_restore --clean` against live source/metadata; no automated overwrite. Rotate PostgreSQL passwords interactively with `\password`, update private files, then restart the affected BI connection. Rotate operator Metabase API key in admin UI, edit 0600 key file and revoke old key; repeat `plan`. **Do not casually rotate `MB_ENCRYPTION_SECRET_KEY`:** encrypted Metabase stored credentials depend on it; follow supported Metabase re-encryption/backup procedure first. Rotating `MB_SESSION_SECRET_KEY` invalidates sessions; schedule downtime. Roll back code using version control within `bi/`, stop Metabase if incompatible, restore corresponding metadata/state/key snapshot when needed. BI rollback never rolls back Sahabino application migrations. Keep backups and secrets outside distributed artifacts.
 
-## 9. Verification and deferred boundaries
+## 9. Verification, production acceptance and deferred boundaries
 
 Run `python3 tests/run_postgres_validation.py` (stdlib-only) and, where pytest is approved, `python3 -m pytest -q tests` on a disposable Docker-capable host. Both use `postgres:16-alpine`, network `none`, no host ports and synthetic schema/fixtures. If Docker is unavailable, report **NOT RUN**, never SQL success. Then use a disposable Metabase v0.63.18 instance and API key to verify exact saved content, idempotency, direct-pSQL parity, layouts/filter mappings and capability removal. No production finding is included here.
 
 **Evidence gates, not fabricated outputs:** Dashboard definitions now exist, but benchmark interpretation remains gated by exact network schema/grants, analyzed captures, validated private experiment provenance and per-group sample size. Release interpretation additionally requires verified day-precision evidence and explicit windows. Topic annotations do not exist, so network-complaint metrics remain unavailable; negative sentiment is never substituted. Read [source/KPI contract](reports/SOURCE_CONTRACT.md) and [controlled capture guide](reports/NETWORK_CAPTURE_GUIDE.md) before collection.
 
 Official API and environment reference: https://www.metabase.com/learn/metabase-basics/administration/administration-and-operation/metabase-api ; https://www.metabase.com/docs/latest/people-and-groups/api-keys ; https://www.metabase.com/docs/latest/configuring-metabase/environment-variables ; https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker . Confirm the **pinned** version's own live API docs before applying, as `/docs/latest/` may differ from v0.63.18.
+
+For operational verification run the read-only BI steps in
+[`docs/operations/PRODUCTION_ACCEPTANCE.md`](../docs/operations/PRODUCTION_ACCEPTANCE.md)
+from the **VPS**. Verify actual saved-question/card results and filters in the
+SSH-forwarded UI; do not infer successful deployment from the manifest counts,
+from `/api/health`, or from an earlier recorded `apply`. A full network benchmark
+or release impact interpretation additionally requires the validated private
+experiment/release manifests and metric-specific eligibility thresholds.

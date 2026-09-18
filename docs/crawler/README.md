@@ -1,8 +1,11 @@
 # Sahabino Google Play Crawler Documentation
 
-> **Implementation baseline:** Sahabino `0.1.0`, documented from the supplied source snapshot on 2026-09-09.
->
-> These documents describe the **current implementation**. The source code is treated as the primary source of truth; earlier design notes and code-review notes are used as supporting context only when they agree with the current code.
+> **Scope and freshness:** The five in-depth chapters were initially drafted
+> against a 2026-09-09 crawler snapshot. Use the checked-out crawler code,
+> migrations and current runtime configuration as the source of truth for
+> differences introduced after that baseline. This index was reviewed against
+> the supplied 2026-09-18 source archive; it does not certify every line of the
+> historical deep-dive chapters as current.
 
 ## Who these documents are for
 
@@ -54,7 +57,10 @@ docs/
     └── 05-architecture-decisions-risks-and-maintenance.md
 ```
 
-The existing short `docs/crawler.md` can remain as a landing-page summary or be replaced with a link to this directory.
+This directory is the crawler landing page (`docs/crawler.md` is not present
+in the reviewed archive). Keep cross-subsystem acceptance commands in the
+[production checklist](../operations/PRODUCTION_ACCEPTANCE.md); do not
+reproduce the mutable production test script in the crawler architecture docs.
 
 ## Source scope
 
@@ -67,4 +73,11 @@ The documentation covers:
 - crawler unit, integration, and external tests
 - Docker Compose/runtime commands relevant to the crawler
 
-It does **not** document future analytics ingestion as if it already exists. The crawler publishes collection events; downstream analytical persistence is outside the implemented crawler subsystem.
+The downstream ingestion pipeline **is implemented** in
+`src/sahabino/ingestion/**`. This crawler guide focuses on the crawler boundary:
+its lifecycle is recorded directly in PostgreSQL, while collected application
+and review events are published to Kafka for ingestion. For downstream output
+verification, Kafka lag and exact-run snapshot/review checks, see
+[production acceptance](../operations/PRODUCTION_ACCEPTANCE.md). Standalone
+Sentiment and Metabase live outside the crawler subsystem and are documented
+in their own READMEs.

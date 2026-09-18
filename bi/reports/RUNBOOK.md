@@ -3,13 +3,21 @@
 **Audience:** Production operator and database administrator (DBA)
 **Scope:** Deploy, verify, operate, and recover the standalone Metabase BI service without changing the main Sahabino application's Compose files, migrations, or deployment procedure.
 
-> **Execution status:** The recorded Metabase content deployment ended with `APPLY: completed 34 action assessments; no unrelated content deleted`. Successful final `plan` output showing all `SKIP`, end-to-end dashboard and SQL checks, confirmed healthy status, and a backup/restore drill were **not supplied**. The commands below are an operational procedure; they are not a claim that every step has been successfully executed on the server.
+> **Execution status:** A historical, earlier-version Metabase run reported
+> `APPLY: completed 34 action assessments; no unrelated content deleted`.
+> That record **does not demonstrate that the current 42-question/7-dashboard
+> manifest has been applied**. The final eligible-object `SKIP` plan,
+> actual UI and reader-SQL checks, live health and restore drill still require
+> current production evidence. This runbook is a procedure, not a server PASS.
 >
 > **Do not run initial provisioning on an existing installation without inspecting its databases, roles, secrets, and current state.** Do not replace `.env`, the encryption key, the API key, or `secrets/metabase_sync_state.json` during routine updates.
 
 ## 1. Deployment model and prerequisites
 
-The BI service runs in its **own** `/opt/sahabino-bi` directory and Compose project. It connects to the **existing** Sahabino PostgreSQL container through the separate Docker network `sahabino-bi-db` and alias `sahabino-postgres-bi`. No additional PostgreSQL server is required.
+The BI service runs in its **own** `/opt/sahabino-bi` directory and Compose project. It connects to the **existing** Sahabino PostgreSQL container through the separate Docker network `sahabino-bi-db` and alias `sahabino-postgres-bi`. No additional PostgreSQL server is required. For an observation-first
+verification of the **entire** system, use the
+[production acceptance guide](../../docs/operations/PRODUCTION_ACCEPTANCE.md);
+this document details BI-specific installation, ownership and recovery.
 
 | Database | Purpose | Access |
 |---|---|---|
@@ -271,7 +279,7 @@ curl -i --max-time 10 http://127.0.0.1:3001/api/health
 docker stats --no-stream sahabino-bi-metabase-1
 ```
 
-Check for explicit database authentication errors, connection refusal, OOM, or restarts. `up -d` starts Metabase; it does **not** create the 24 saved questions or four dashboards.
+Check for explicit database authentication errors, connection refusal, OOM, or restarts. `up -d` starts Metabase; it does **not** create the 42 Saved Questions or seven dashboards defined by the current manifest.
 
 ## 7. Complete the one-time UI configuration securely
 
@@ -327,7 +335,14 @@ python3 -m py_compile scripts/metabase_sync.py
 python3 scripts/metabase_sync.py plan
 ```
 
-Inspect the entire plan. The expected **first** plan on an empty Metabase instance reported three collections, 24 questions and four dashboards as `CREATE` (31 action assessments). Stop if it reports a blocker, conflicting ownership, an unexpected update, missing source, or unsafe SQL. If approved:
+Inspect the entire plan. The **current manifest** has three collections,
+42 questions and seven dashboards (45 dashboard-card placements), but a fresh
+installation may legitimately report `SKIP_CAPABILITY` for gated content.
+Do **not** reuse an old expectation of 31 actions or assume every manifest
+object can be created regardless of source schema, grants or validated evidence.
+Stop for blockers, conflicting ownership, unexpected updates, a missing
+source or unsafe SQL. Only after reviewing eligible actions and obtaining
+operator approval:
 
 ```bash
 cd /opt/sahabino-bi
@@ -335,7 +350,12 @@ python3 scripts/metabase_sync.py apply
 python3 scripts/metabase_sync.py plan
 ```
 
-**Recorded outcome:** the final observed `apply` ended with `APPLY: completed 34 action assessments; no unrelated content deleted`. **Required next verification:** the final `plan` must report every managed item as `SKIP`; this all-SKIP output was not provided in the original deployment record.
+**Historical record only:** an earlier `apply` logged 34 action assessments.
+It is not proof of current coverage. **Required verification for this
+revision:** every eligible, unchanged managed object should report `SKIP`;
+unavailable capabilities may correctly report `SKIP_CAPABILITY`. Investigate
+any unexpected `CREATE`, `UPDATE`, conflict, or blocker. Record counts and
+compare deployed objects with the current manifest and enabled capabilities.
 
 **Commands mean different things:**
 
@@ -350,7 +370,10 @@ The synchronizer records ownership and checkpoints in `secrets/metabase_sync_sta
 
 ## 9. Validate the BI deliverable, not only the API response
 
-The expected content is **three collections, 24 saved questions, four dashboards, and 27 dashboard-card placements**:
+The manifest currently defines **three collections, 42 saved questions,
+seven dashboards, and 45 dashboard-card placements**. Eligibility is
+capability-dependent; record both the declared inventory and what was actually
+provisioned and executed:
 
 | Dashboard | Cards | Acceptance checks |
 |---|---:|---|
@@ -358,8 +381,17 @@ The expected content is **three collections, 24 saved questions, four dashboards
 | Store Growth & Rating | 11 | Rating/count trends, valid date and locale comparisons, install thresholds rather than fabricated precise growth |
 | Review Intelligence | 5 | Unique reviews versus observations, score changes, sampling and coverage |
 | Sentiment Intelligence | 5 | Required schema and valid `done` labels; correct denominator; absent data shown as unavailable |
+| Network Benchmark | 8 | Schema/grants, capture readiness and per-metric sample gates; do not interpret missing experiments as performance. |
+| Application Experience — Store × Network × User Voice | 4 | Independently aggregated sources; historical locale, timestamps and unavailable coverage clearly shown. |
+| Release Impact Explorer | 6 | Verified releases, exact periods and sample gates; no causal claim or fabricated missing evidence. |
 
-In the UI at **http://127.0.0.1:13001**, open `Sahabino BI → Dashboards`. Execute **every card**, inspect empty/error states, test available application/country/language/date filters, and compare selected results with direct SQL using `sahabino_bi_reader`. A successful `apply` is **not** acceptance of results or chart layout.
+In the UI at **http://127.0.0.1:13001**, open `Sahabino BI → Dashboards`.
+Execute **every actually eligible/deployed card**, inspect empty/error states,
+test available application/country/language/date/experiment/release filters,
+and compare selected results with direct SQL as `sahabino_bi_reader`. A
+successful `apply` is **not** acceptance of results or chart layout. Record
+unavailable network/release evidence as an explicit capability limitation,
+not an achieved benchmark.
 
 On the VPS, record a clean content audit:
 
@@ -483,9 +515,13 @@ Restoration was **not verified** in the recorded deployment. Before a production
 - [ ] Preflight has **no BLOCKER**; warnings assessed; secrets and encryption key private.
 - [ ] Compose config valid; image digest pinned; Metabase accessible only on loopback; health `ok` and Docker `healthy` recorded.
 - [ ] Admin account, exact `Sahabino BI Source`, and private API key configured.
-- [ ] `plan` reviewed, `apply` completed, **final `plan` all `SKIP`** recorded.
-- [ ] Four dashboards, 24 questions, 27 card placements, filters and selected reader-SQL results verified.
+- [ ] Current manifest inventory compared with actual enabled capabilities; only approved `CREATE`/`UPDATE` applied; final `plan` is `SKIP` for eligible unchanged objects, with justified `SKIP_CAPABILITY` where applicable.
+- [ ] Seven dashboards, 42 questions and 45 card placements declared; deployed/eligible subset inventoried; every relevant panel, filter and selected reader-SQL result verified.
 - [ ] Data timestamps and cache behavior documented; missing values not misreported as zero.
 - [ ] Metadata backup, matching sync state and encryption material protected; restore drill completed before claiming disaster-recovery readiness.
 
-**Recorded versus unverified:** The last observed `apply` completed successfully. Final all-SKIP `plan`, all chart/SQL results, healthy status and restore drill remain acceptance checks until their actual output is captured.
+**Recorded versus unverified:** The historical `apply` record pertains to a
+smaller earlier inventory. A current eligible-object `SKIP` plan, chart/SQL
+results, health status and restore drill remain acceptance checks until their
+actual output is captured for this revision. See the
+[full production acceptance guide](../../docs/operations/PRODUCTION_ACCEPTANCE.md).

@@ -16,7 +16,11 @@ reconstruct host checks, Git/SSH setup, Vault handling, dependency bootstrap,
 permission repair, failure diagnosis, and post-deploy verification.
 
 For day-to-day runtime commands after deployment, see
-[`docs/operations/README.md`](../../docs/operations/README.md).
+[`docs/operations/README.md`](../../docs/operations/README.md). For a full
+read-only-first service/data/dashboard acceptance walkthrough, see
+[`docs/operations/PRODUCTION_ACCEPTANCE.md`](../../docs/operations/PRODUCTION_ACCEPTANCE.md).
+The latter separately labels tests that contact external services or modify
+database rows and requires explicit approval for them.
 
 ## Production scope and safety boundaries
 
@@ -81,7 +85,7 @@ Main modes:
 | `--check` | Host/repository/Vault preflight only. |
 | `--provision` | Bootstrap as needed and run `provision.yml` only. |
 | `--deploy` | Bootstrap as needed, deploy a revision, then verify. |
-| `--verify` | Verify the currently running production deployment. |
+| `--verify` | Verify the currently running deployment; running it as root can also normalize checkout file permissions. It is **not** strictly read-only. |
 
 Useful options:
 
@@ -631,7 +635,8 @@ location on the VPS, then install that file as root:
 
 ```bash
 sudo install -o root -g root -m 0750 /tmp/sahabino-deploy-new.sh /usr/local/sbin/sahabino-deploy
-sudo /usr/local/sbin/sahabino-deploy --deploy --revision fix/production-deployment --socks-proxy 127.0.0.1:8080
+# Example only: select an approved branch/SHA; use --socks-proxy only if required.
+sudo /usr/local/sbin/sahabino-deploy --deploy --revision origin/main
 ```
 
 The temporary source must come from a reviewed and trusted release. Do not
@@ -744,7 +749,8 @@ containers. The SeaweedFS healthcheck also strips proxy variables and uses the
 loopback master endpoint. Docker daemon/build proxy configuration remains a
 host-level prerequisite and is not silently rewritten by the deployment.
 
-Regression coverage: `pytest tests/deployment`, shell `bash -n`, and the new
-`.github/workflows/deployment-safety.yml` workflow. This archive's original
-export did not contain the repository's existing `.github/workflows/ci.yml`;
-the new deployment-safety workflow is additive rather than a replacement.
+Regression coverage: `pytest tests/deployment`, shell `bash -n`, and
+`.github/workflows/deployment-safety.yml`. Confirm the existing CI workflow
+remains present in the actual checkout; deployment-safety is additive rather
+than a replacement. Use the separate production acceptance checklist for live
+service and business-output evidence, not only deployment verification.

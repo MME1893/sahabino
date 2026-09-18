@@ -189,3 +189,19 @@ Before submitting container or Compose changes, validate the Compose configurati
 ```bash
 docker compose config
 ```
+
+## Documentation and production-safety reviews
+
+When changing a data pipeline, migration, deployment, BI manifest, or dashboard,
+update its focused README/runbook and link the canonical
+[`docs/operations/PRODUCTION_ACCEPTANCE.md`](docs/operations/PRODUCTION_ACCEPTANCE.md)
+where a new acceptance check is required. Keep local/state-changing smoke
+scripts distinct from observation-only production commands. For report changes,
+check actual query results, denominators, filters, missing-value behavior, and
+capability gates—not only the manifest structure or service HTTP health.
+
+Before sharing ZIP archives, test logs or screenshots, exclude `.env`, Vault,
+`secrets/`, model/cache assets, database dumps, capture files, presigned URLs,
+credentials and private review content. Avoid copying generated `__pycache__`,
+`.pytest_cache` and coverage files into deliverables. Do not paste expanded
+`docker compose config` or secret-bearing environment output into a PR.

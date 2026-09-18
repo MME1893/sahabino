@@ -47,47 +47,54 @@ The image sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, and model loadin
 `local_files_only=True`, `trust_remote_code=False`, and safetensors. Startup fails before processing
 if the pinned model revision is absent or invalid. The cache is never copied into the image or Git.
 
-## Preflight and manual migration
+## Preflight and manually approved migrations
 
-Do not run the worker before migration `20260917_0007`. The migration is manual and must not be
-applied until a verified PostgreSQL backup exists. Perform these checks from a trusted admin
-environment that has this checkout, the normal Sahabino Python dependencies, and authorized
-database network access:
+The sentiment columns are introduced in migration `20260917_0007`.
+The **current repository head is `20260917_0008`**, which adds the
+`ix_review_observations_review_id` index; it does not introduce a new worker
+execution mode. Before any worker run, inspect the *live* schema and deployment
+image compatibility, and aim to have both the database and application release
+at the approved current head. Old notes claiming that `0007` is the only head
+are historical and must not drive production actions.
 
-```sh
-git status --short --branch
-uv run alembic current
-uv run alembic heads
-```
-
-Confirm the current revision is `20260916_0006`, the only head is `20260917_0007`, the target is the
-intended database, and the backup can be restored. Then apply only the new revision:
+From a trusted administrative checkout with authorized database access:
 
 ```sh
-uv run alembic upgrade 20260917_0007
-uv run alembic current
+git rev-parse HEAD
+git status --short
+uv run --no-sync alembic current
+uv run --no-sync alembic heads
 ```
 
-This command requires the normal `SAHABINO_DATABASE_URL` configuration used by Alembic. Do not put
-credentials in shell history. The migration adds columns and constraints only; it does not add
-tables or copy `reviews.content` into historical observations. Existing observations become
-`skipped`, then the database default changes to `pending` for future inserts. PostgreSQL can add a
-non-volatile constant default without rewriting every row on supported versions; constraint
-validation still scans the table. The partial pending index does not index review content.
-
-Downgrading to `20260916_0006` preserves observations and their existing composite key and foreign
-keys, but permanently drops observation content and all sentiment state. Take another backup and
-explicitly accept that data loss before running:
+**These commands inspect but do not migrate.** If the live DB is at `0006` or
+`0007`, obtain a verified restorable backup and an approved release window;
+use the normal deployment assistant and its explicit migration gate rather
+than improvising `alembic upgrade` on the production VPS. In a disposable or
+separately approved manual migration workflow, apply the outstanding revisions
+in order and recheck both `current` and `heads`:
 
 ```sh
-uv run alembic downgrade 20260916_0006
+# Illustrative, state-changing commands; NOT routine production health checks.
+# Only if currently at 20260916_0006 and separately authorized:
+uv run --no-sync alembic upgrade 20260917_0007
+# Only if currently at 20260917_0007 and separately authorized:
+uv run --no-sync alembic upgrade 20260917_0008
+uv run --no-sync alembic current
 ```
 
-The migration is compatible with the old ingestion image because every new column has either a
-nullable shape or a server default. However, the currently running old image does **not** save
-observation content or source timestamps. Observations it inserts after migration will be pending
-with `content = NULL` and will be skipped by the worker. Apply the migration first; only a later,
-manual activation of the modified ingestion code begins saving content for new observations.
+Migration `0007` adds sentiment observation columns and constraints. Existing
+observations are marked `skipped`; new observations default to `pending`.
+It does not backfill old review contents, and a pre-sentiment ingestion image
+may insert pending rows with `content = NULL` that the worker later skips.
+Activate a compatible ingestion image after the migration through a reviewed
+release. Migration `0008` adds the review-ID lookup index; its build has its
+own database-lock/disk considerations. Neither migration downloads the model.
+
+Downgrading from head to `20260916_0006` removes the index followed by
+**all sentiment status/content columns and their data**. It is destructive,
+requires a dedicated backup and change approval, and is not a recovery or
+health-check command. Do not downgrade merely because a worker failed; inspect
+its logs, advisory lock, model cache and pending/failed counts first.
 
 ## Independent image build and offline preflight
 
@@ -215,3 +222,13 @@ python -m pytest sentiment/tests/real/test_parsbert.py
 ```
 
 Do not count the default skipped real-model test as executed model coverage.
+
+## Production acceptance
+
+Read the observation-only sentiment checks and the separately approved `--once`
+write-test gate in
+[`docs/operations/PRODUCTION_ACCEPTANCE.md`](../docs/operations/PRODUCTION_ACCEPTANCE.md).
+A missing/exited one-shot worker container is normal between runs. Healthy
+classification requires valid labels and coverage in persisted observations;
+`skipped` is not neutral and a skipped real-model pytest is **NOT RUN**, not
+proof of ParsBERT inference. Never print review text or secrets in a test log.

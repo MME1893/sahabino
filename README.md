@@ -35,12 +35,20 @@ To add the local logging stack:
 docker compose --profile observability up -d
 ```
 
-For a production deployment, use the deployment assistant instead of manually
-reconstructing the Compose and Ansible sequence:
+For the initial production bootstrap, use the deployment assistant from a reviewed
+checkout. On an already-installed host, use the one-time-installed launcher
+`/usr/local/sbin/sahabino-deploy`, following its frozen safety contract:
 
 ```bash
+# Initial/bootstrap workflow only (review deployment instructions first):
 sudo deploy/ansible/sahabino-deploy.sh
+# Already-installed launcher; a DEPLOY command, not a health check:
+# sudo /usr/local/sbin/sahabino-deploy --deploy --revision origin/main
 ```
+
+**Do not copy local development commands to the production VPS.** In particular,
+`alembic upgrade`, topic provisioning, and the full smoke scripts can modify
+services or data.
 
 See [Development setup](docs/development.md) for local installation details and
 [Production deployment](deploy/ansible/README.md) for the complete server flow.
@@ -94,6 +102,18 @@ Ingestion Worker
 PostgreSQL
 ```
 
+Sentiment and BI are independent of the core ingestion lifecycle:
+
+```text
+PostgreSQL review_observations -- optional, standalone sentiment worker --> sentiment columns
+PostgreSQL (restricted readers) --> optional Grafana PostgreSQL dashboards / standalone Metabase
+```
+
+The sentiment worker does not consume Kafka; Metabase `plan` audits report
+*definitions*, and `apply` changes definitions. Neither command runs a crawl or
+refreshes source data. Actual visibility requires running workers, valid database
+grants, relevant data and an uncached or refreshed dashboard query.
+
 Production application logs follow a separate observability path:
 
 ```text
@@ -122,6 +142,8 @@ API / Crawler / Ingestion
 | **Ingestion** | Consumes collected events and applies idempotent PostgreSQL writes. |
 | **Network Analysis** | Handles capture metadata, object storage, TShark analysis, and analysis events. |
 | **Observability** | Collects structured application logs through Alloy, Loki, and Grafana. |
+| **Standalone Sentiment** | Optional, separately deployed CPU worker that classifies eligible review observations and writes outcomes to PostgreSQL; not a continuous service in the production Compose project. |
+| **Metabase BI** | Independent Compose project and restricted PostgreSQL reader; version-controlled saved questions and dashboards are synchronized explicitly, not by crawling. |
 | **Deployment** | Uses Ansible plus the deployment assistant for repeatable production provisioning and releases. |
 
 ## Architecture principles
@@ -152,6 +174,8 @@ deploy/ansible/          production provisioning and deployment
 infrastructure/          observability and network-service configuration
 migrations/              Alembic database migrations
 scripts/                 smoke-test and utility scripts
+sentiment/               independent worker and its tests
+bi/                      independent Metabase Compose, reports and sync tooling
 tests/                   unit, integration, system, and external smoke tests
 ```
 
@@ -166,8 +190,17 @@ manual:
   configuration groups.
 - [Production deployment](deploy/ansible/README.md) — deploy assistant, Ansible,
   Vault, Deploy Key, permissions, backup/restore, and deployment troubleshooting.
-- [Production operations](docs/operations/README.md) — start/stop/up/down, health
-  checks, logs, SSH forwarding, database/Kafka checks, and routine operations.
+- [Production operations](docs/operations/README.md) — routine service controls,
+  health checks, logs, SSH forwarding, and PostgreSQL/Kafka inspection.
+- [Production acceptance](docs/operations/PRODUCTION_ACCEPTANCE.md) — safe
+  observation-first test sequence; explicitly approved crawler/sentiment write tests;
+  database, Kafka, network, Grafana and Metabase output checks and evidence checklist.
+- [Standalone sentiment](sentiment/README.md) — model cache, migrations, isolated
+  worker execution and status validation.
+- [Standalone BI](bi/README.md) and [BI reports](bi/reports/README.md) —
+  independent Metabase deployment, capabilities and KPI contract.
+- [Observability](docs/observability/README.md) — optional PostgreSQL-backed
+  Grafana dashboards, reader grants and log validation.
 - [Crawler documentation](docs/crawler/README.md) — crawler architecture,
   resilience, adapters, configuration, testing, and maintenance.
 - [Network analysis](docs/network/README.md) — capture lifecycle, storage,
@@ -200,9 +233,11 @@ Main endpoint groups:
 For local development, use the commands in
 [Development setup](docs/development.md).
 
-For production, use the deployment assistant for releases and the
-[operations runbook](docs/operations/README.md) for routine service control and
-health checks.
+For production, use the deployment assistant for releases, the
+[operations runbook](docs/operations/README.md) for routine service control,
+and the [production acceptance checklist](docs/operations/PRODUCTION_ACCEPTANCE.md)
+for a full, evidence-based verification. A healthy container/API response alone
+does not establish successful crawling, sentiment, ingestion, or dashboard results.
 
 A full local runtime smoke test is also available:
 
@@ -211,7 +246,8 @@ bash scripts/smoke-full-pipeline.sh
 ```
 
 Detailed behavior, flags, and side effects are documented in the
-[smoke-test guide](docs/testing/smoke-full-pipeline.md).
+[smoke-test guide](docs/testing/smoke-full-pipeline.md). This local script is
+**not** a safe read-only acceptance command for production.
 
 ### Production deployment (local-backup safety contract)
 

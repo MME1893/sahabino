@@ -50,11 +50,19 @@ with no credentials, query, fragment, or non-root path and rejects local,
 reserved, and non-global addresses. TLS, DNS, reverse proxy, and firewall
 configuration remain operator-managed.
 
-Run the bounded end-to-end acceptance workflow with:
+Run the bounded, **state-changing local/staging** smoke workflow only in an
+isolated Compose project with development credentials and test objects:
 
 ```bash
+# NOT on the production VPS / existing production Compose project.
 bash scripts/smoke-network-pipeline.sh --build
 ```
+
+For a deployed VPS, start with the [production acceptance checklist](../operations/PRODUCTION_ACCEPTANCE.md):
+read-only SeaweedFS/TShark, capture lifecycle and persisted analysis queries;
+reserve real uploads for an approved dedicated experiment. An API/SeaweedFS
+HTTP-200 or a synthetic capture alone cannot establish performance-quality
+comparability.
 
 ## API workflow
 

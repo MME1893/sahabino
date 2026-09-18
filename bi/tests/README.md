@@ -17,3 +17,14 @@ No test modifies Sahabino's application database, release scripts, migrations, a
 `test_metadata.py` adds more than 30 manifest cases: UUIDs, timestamps/order, required provenance, action/phase, SHA/size, device/profile/cohort catalogs, duplicates, cross-experiment pair rejection, pair cardinality/conditions, DB attribution/size/existence, release precision/windows/verification and private-field exclusion from generated SQL. Offline validation explicitly records DB checks as NOT_RUN.
 
 `test_sync.py` now covers all 42 questions and 7 dashboards, immutable Q01-Q24 SQL/dashboard-definition hashes, readiness-only Network behavior when schema/grants are absent, private-field exclusion, optional sentiment, unchanged second apply/no duplicates, dynamic manifest card counts, layout/filter mapping, conflicts, partial checkpoints and secrets. It remains a mock contract test, not proof against a live Metabase. A disposable **digest-pinned `metabase/metabase:v0.63.18@sha256:1160b570cb11c107bce00e71293552df8a8363e01a32c2c7a048cee002dc8a73`** API smoke test is still required before any approved production apply; if Docker/image/API setup is unavailable, report it as NOT RUN and do not claim deployment readiness.
+
+## Production acceptance boundary
+
+These tests belong on a disposable Docker-capable developer/CI host. The SQL
+harness deliberately creates and destroys its own isolated test container, but
+its successful result still does not prove the live source schema/grants,
+Metabase connections, actual card results, or dashboard layouts. On a live VPS,
+use the read-only checks in
+[`docs/operations/PRODUCTION_ACCEPTANCE.md`](../../docs/operations/PRODUCTION_ACCEPTANCE.md)
+and record skipped integration cases as **NOT RUN**. Do not point any test database
+URL, test fixture or synthetic capture at production.

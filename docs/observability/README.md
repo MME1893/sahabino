@@ -130,6 +130,14 @@ No event includes review content, author names, payloads, credentials, connectio
 
 ## Verification
 
+The [production acceptance checklist](../operations/PRODUCTION_ACCEPTANCE.md)
+separates HTTP readiness, Loki ingestion *after a real crawl*, optional
+PostgreSQL Data Source enrollment, and every Grafana panel's actual output.
+A healthy Grafana `/api/health` does not prove these paths. If
+`GRAFANA_POSTGRES_PASSWORD` is absent, the four PostgreSQL-backed dashboards
+may be provisioned but their Data Source is not enabled: record this as a
+feature-gated/incomplete dashboard acceptance, not a complete PASS.
+
 Static checks from the repository root:
 
 ```bash
