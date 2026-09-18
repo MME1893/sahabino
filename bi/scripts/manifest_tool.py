@@ -31,7 +31,10 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--experiment-manifest")
     p.add_argument("--release-manifest")
-    p.add_argument("--db-container", help="explicit container ID/name; enables DB-aware capture checks")
+    p.add_argument(
+        "--db-container", help="explicit container ID/name;" \
+        " enables DB-aware capture checks"
+    )
     p.add_argument("--reader", default="sahabino_bi_reader")
     p.add_argument("--database", default="sahabino")
     p.add_argument("--reader-password-file")
@@ -39,13 +42,19 @@ def main(argv=None):
     try:
         first = validate_experiment(args.experiment_manifest)
         records = db_capture_records(args, [x["capture_id"] for x in first.records])
-        experiment = validate_experiment(args.experiment_manifest, records) if records is not None else first
+        experiment = (
+            validate_experiment(args.experiment_manifest, records) if records is not None \
+                else first
+        )
         release = validate_release(args.release_manifest)
         output = {"experiment": experiment.safe_dict(), "release": release.safe_dict()}
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0 if experiment.valid and release.valid else 2
     except Exception:
-        print("BLOCKER: manifest validation failed; database/server details suppressed", file=sys.stderr)
+        print(
+            "BLOCKER: manifest validation failed; database/server details suppressed",
+            file=sys.stderr,
+        )
         return 2
 
 

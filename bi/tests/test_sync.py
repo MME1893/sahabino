@@ -11,7 +11,6 @@ BI = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BI / "scripts"))
 import metabase_sync as sync
 
-
 LEGACY_SQL_SHA256 = [
     "b0fb457b19502d60b17d9b9c0ace6f6c273c6f46d631ed9e957a5d6396789adf",
     "1e3b044cc99a486bac828902c1d8d73f1352b097fa35651f1cfec7fa3b690d51",

@@ -11,7 +11,6 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 EXPERIMENT_FIELDS = (
     "capture_id",
     "experiment_id",
@@ -178,7 +177,7 @@ def _utc(value, label, errors):
         parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
         if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
             raise ValueError
-        return parsed.astimezone(dt.timezone.utc)
+        return parsed.astimezone(dt.UTC)
     except (ValueError, TypeError):
         errors.append(f"{label}: timestamp must be ISO-8601 UTC")
         return None
@@ -203,7 +202,14 @@ def _boolean(value, label, errors):
 
 def _reject_template_controls(raw, prefix, errors):
     forbidden = (
-        "\x00", "{{", "}}", "[[", "]]", *EXP_MARKERS, *REL_MARKERS, *CAP_MARKERS,
+        "\x00",
+        "{{",
+        "}}",
+        "[[",
+        "]]",
+        *EXP_MARKERS,
+        *REL_MARKERS,
+        *CAP_MARKERS,
         *SENT_MARKERS,
     )
     for name, value in raw.items():
@@ -220,7 +226,9 @@ def validate_experiment(path=None, db_records=None):
     payload, source = _load(path, "experiment")
     report = ValidationReport("experiment", source)
     if payload is None:
-        report.warnings.append("experiment manifest not supplied; typed empty relation will be used")
+        report.warnings.append(
+            "experiment manifest not supplied; typed empty relation will be used"
+        )
         return report
     captures = payload.get("captures")
     devices = payload.get("allowed_device_models")
@@ -229,17 +237,25 @@ def validate_experiment(path=None, db_records=None):
     if not isinstance(captures, list):
         report.errors.append("captures must be an array")
         return report
-    if not isinstance(devices, list) or not devices or not all(isinstance(x, str) and x for x in devices):
+    if (
+        not isinstance(devices, list)
+        or not devices
+        or not all(isinstance(x, str) and x for x in devices)
+    ):
         report.errors.append("allowed_device_models must be a non-empty string array")
         devices = []
-    if not isinstance(profiles, list) or not profiles or not all(
-        isinstance(x, str) and x for x in profiles
+    if (
+        not isinstance(profiles, list)
+        or not profiles
+        or not all(isinstance(x, str) and x for x in profiles)
     ):
         report.errors.append("allowed_network_profiles must be a non-empty string array")
         profiles = []
     allowed_cohorts = set()
     if not isinstance(comparison_cohorts, list) or not comparison_cohorts:
-        report.errors.append("allowed_comparison_cohorts must be a non-empty array of two-package arrays")
+        report.errors.append(
+            "allowed_comparison_cohorts must be a non-empty array of two-package arrays"
+        )
     else:
         for index, cohort in enumerate(comparison_cohorts, 1):
             if (
@@ -289,8 +305,12 @@ def validate_experiment(path=None, db_records=None):
         except (ValueError, TypeError):
             report.errors.append(f"{prefix}.test_file_size_bytes: must be positive")
             row["test_file_size_bytes"] = None
-        started = _utc(raw["capture_started_at_utc"], f"{prefix}.capture_started_at_utc", report.errors)
-        finished = _utc(raw["capture_finished_at_utc"], f"{prefix}.capture_finished_at_utc", report.errors)
+        started = _utc(
+            raw["capture_started_at_utc"], f"{prefix}.capture_started_at_utc", report.errors
+        )
+        finished = _utc(
+            raw["capture_finished_at_utc"], f"{prefix}.capture_finished_at_utc", report.errors
+        )
         if started and finished and finished <= started:
             report.errors.append(f"{prefix}: capture finish must be after start")
         row["capture_started_at_utc"] = started
@@ -303,20 +323,32 @@ def validate_experiment(path=None, db_records=None):
             row[name] = _boolean(raw[name], f"{prefix}.{name}", report.errors)
         if type(raw["transfer_completed"]) is bool and not raw["transfer_completed"]:
             report.errors.append(f"{prefix}.transfer_completed: incomplete transfers are excluded")
-        if type(raw["capture_isolation_confirmed"]) is bool and not raw["capture_isolation_confirmed"]:
-            report.errors.append(f"{prefix}.capture_isolation_confirmed: required provenance is unconfirmed")
-        if type(raw["cache_cleared_or_download_verified"]) is bool and not raw["cache_cleared_or_download_verified"]:
+        if (
+            type(raw["capture_isolation_confirmed"]) is bool
+            and not raw["capture_isolation_confirmed"]
+        ):
+            report.errors.append(
+                f"{prefix}.capture_isolation_confirmed: required provenance is unconfirmed"
+            )
+        if (
+            type(raw["cache_cleared_or_download_verified"]) is bool
+            and not raw["cache_cleared_or_download_verified"]
+        ):
             report.errors.append(
                 f"{prefix}.cache_cleared_or_download_verified: required transfer provenance is unconfirmed"
             )
         if raw["scenario"] not in ("upload", "download"):
-            report.errors.append(f"{prefix}.scenario: unsupported action; expected upload or download")
+            report.errors.append(
+                f"{prefix}.scenario: unsupported action; expected upload or download"
+            )
         if raw["experiment_phase"] not in ("baseline", "followup", "ordinary"):
             report.errors.append(f"{prefix}.experiment_phase: unsupported phase")
         if not PACKAGE.fullmatch(str(raw["application_package"])):
             report.errors.append(f"{prefix}.application_package: invalid package identifier")
         if raw["application_package"] == "ir.rightel.myrightel":
-            report.errors.append(f"{prefix}.application_package: deliberate MyRightel fixture is excluded")
+            report.errors.append(
+                f"{prefix}.application_package: deliberate MyRightel fixture is excluded"
+            )
         if not HEX64.fullmatch(str(raw["test_file_sha256"])):
             report.errors.append(f"{prefix}.test_file_sha256: expected 64 hexadecimal characters")
         row["file_cohort_id"] = _opaque_id(
@@ -344,11 +376,22 @@ def validate_experiment(path=None, db_records=None):
         if row["capture_id"] in seen_capture:
             report.errors.append(f"{prefix}.capture_id: duplicate")
         seen_capture.add(row["capture_id"])
-        trial_key = tuple(row.get(x) for x in (
-            "experiment_id", "session_id", "application_package", "scenario",
-            "file_cohort_id", "device_model", "android_version", "network_type",
-            "network_profile", "app_version", "trial_number"
-        ))
+        trial_key = tuple(
+            row.get(x)
+            for x in (
+                "experiment_id",
+                "session_id",
+                "application_package",
+                "scenario",
+                "file_cohort_id",
+                "device_model",
+                "android_version",
+                "network_type",
+                "network_profile",
+                "app_version",
+                "trial_number",
+            )
+        )
         if trial_key in seen_trial:
             report.errors.append(f"{prefix}: duplicate trial within the exact comparison condition")
         seen_trial.add(trial_key)
@@ -381,7 +424,9 @@ def validate_experiment(path=None, db_records=None):
         if a.get("application_package") == b.get("application_package"):
             report.errors.append(f"pair {pair_id}: paired applications must differ")
         elif cohort not in allowed_cohorts:
-            report.errors.append(f"pair {pair_id}: applications are not an allowed comparison cohort")
+            report.errors.append(
+                f"pair {pair_id}: applications are not an allowed comparison cohort"
+            )
         else:
             cohort_id = _opaque_id("cohort", *cohort)
             a["comparison_cohort_id"] = cohort_id
@@ -431,7 +476,9 @@ def validate_release(path=None):
             continue
         row = dict(raw)
         _reject_template_controls(raw, prefix, report.errors)
-        row["release_event_id"] = _uuid(raw["release_event_id"], f"{prefix}.release_event_id", report.errors)
+        row["release_event_id"] = _uuid(
+            raw["release_event_id"], f"{prefix}.release_event_id", report.errors
+        )
         if row["release_event_id"] in seen:
             report.errors.append(f"{prefix}.release_event_id: duplicate")
         seen.add(row["release_event_id"])
@@ -443,20 +490,33 @@ def validate_release(path=None):
             raw["release_date_verified"], f"{prefix}.release_date_verified", report.errors
         )
         if raw["release_date_precision"] not in ("day", "month", "unknown"):
-            report.errors.append(f"{prefix}.release_date_precision: expected day, month, or unknown")
+            report.errors.append(
+                f"{prefix}.release_date_precision: expected day, month, or unknown"
+            )
         if not PACKAGE.fullmatch(str(raw["application_package"])):
             report.errors.append(f"{prefix}.application_package: invalid package identifier")
         if raw["application_package"] == "ir.rightel.myrightel":
-            report.errors.append(f"{prefix}.application_package: deliberate MyRightel fixture is excluded")
-        for name in ("previous_version", "new_version", "release_date_source", "release_evidence_reference"):
+            report.errors.append(
+                f"{prefix}.application_package: deliberate MyRightel fixture is excluded"
+            )
+        for name in (
+            "previous_version",
+            "new_version",
+            "release_date_source",
+            "release_evidence_reference",
+        ):
             if not isinstance(raw[name], str) or not raw[name].strip():
                 report.errors.append(f"{prefix}.{name}: required non-empty string")
         if raw["previous_version"] == raw["new_version"]:
             report.errors.append(f"{prefix}: previous_version and new_version must differ")
         dates = {}
         for name in (
-            "baseline_start", "baseline_end", "followup_start", "followup_end",
-            "transition_period_start", "transition_period_end",
+            "baseline_start",
+            "baseline_end",
+            "followup_start",
+            "followup_end",
+            "transition_period_start",
+            "transition_period_end",
         ):
             dates[name] = _date(raw[name], f"{prefix}.{name}", report.errors)
         if release and row["release_date_verified"] and raw["release_date_precision"] == "day":
@@ -467,24 +527,38 @@ def validate_release(path=None):
             dates["transition_period_start"] = dates["transition_period_start"] or release
             dates["transition_period_end"] = dates["transition_period_end"] or release
         row.update(dates)
-        if dates["baseline_start"] and dates["baseline_end"] and dates["baseline_start"] > dates["baseline_end"]:
+        if (
+            dates["baseline_start"]
+            and dates["baseline_end"]
+            and dates["baseline_start"] > dates["baseline_end"]
+        ):
             report.errors.append(f"{prefix}: baseline window is reversed")
-        if dates["followup_start"] and dates["followup_end"] and dates["followup_start"] > dates["followup_end"]:
+        if (
+            dates["followup_start"]
+            and dates["followup_end"]
+            and dates["followup_start"] > dates["followup_end"]
+        ):
             report.errors.append(f"{prefix}: followup window is reversed")
         if release and dates["baseline_end"] and dates["baseline_end"] >= release:
             report.errors.append(f"{prefix}: baseline must end before release date")
         if release and dates["followup_start"] and dates["followup_start"] <= release:
             report.errors.append(f"{prefix}: followup must start after release date")
-        if dates["transition_period_start"] and dates["transition_period_end"] and (
-            dates["transition_period_start"] > dates["transition_period_end"]
+        if (
+            dates["transition_period_start"]
+            and dates["transition_period_end"]
+            and (dates["transition_period_start"] > dates["transition_period_end"])
         ):
             report.errors.append(f"{prefix}: transition period is reversed")
-        if dates["baseline_end"] and dates["transition_period_start"] and (
-            dates["baseline_end"] >= dates["transition_period_start"]
+        if (
+            dates["baseline_end"]
+            and dates["transition_period_start"]
+            and (dates["baseline_end"] >= dates["transition_period_start"])
         ):
             report.errors.append(f"{prefix}: baseline overlaps transition period")
-        if dates["followup_start"] and dates["transition_period_end"] and (
-            dates["followup_start"] <= dates["transition_period_end"]
+        if (
+            dates["followup_start"]
+            and dates["transition_period_end"]
+            and (dates["followup_start"] <= dates["transition_period_end"])
         ):
             report.errors.append(f"{prefix}: followup overlaps transition period")
         normalized.append(row)
@@ -494,8 +568,12 @@ def validate_release(path=None):
                 continue
             left_start, left_end = left.get("baseline_start"), left.get("followup_end")
             right_start, right_end = right.get("baseline_start"), right.get("followup_end")
-            if left_start and left_end and right_start and right_end and (
-                left_start <= right_end and right_start <= left_end
+            if (
+                left_start
+                and left_end
+                and right_start
+                and right_end
+                and (left_start <= right_end and right_start <= left_end)
             ):
                 report.errors.append(
                     "release events for one application have overlapping analysis windows"
@@ -518,18 +596,31 @@ def _literal(value, cast):
 
 EXP_TYPES = {
     **{x: "text" for x in EXPERIMENT_REPORT_FIELDS},
-    "capture_id": "uuid", "experiment_id": "uuid", "session_id": "uuid", "pair_id": "uuid",
-    "trial_number": "integer", "capture_started_at_utc": "timestamptz",
-    "capture_finished_at_utc": "timestamptz", "transfer_completed": "boolean",
-    "test_file_size_bytes": "bigint", "capture_isolation_confirmed": "boolean",
+    "capture_id": "uuid",
+    "experiment_id": "uuid",
+    "session_id": "uuid",
+    "pair_id": "uuid",
+    "trial_number": "integer",
+    "capture_started_at_utc": "timestamptz",
+    "capture_finished_at_utc": "timestamptz",
+    "transfer_completed": "boolean",
+    "test_file_size_bytes": "bigint",
+    "capture_isolation_confirmed": "boolean",
     "cache_cleared_or_download_verified": "boolean",
 }
 REL_TYPES = {
     **{x: "text" for x in RELEASE_REPORT_FIELDS},
-    "release_event_id": "uuid", "release_date": "date", "release_date_verified": "boolean",
-    "baseline_start": "date", "baseline_end": "date", "followup_start": "date",
-    "followup_end": "date", "transition_period_start": "date", "transition_period_end": "date",
-    "experiment_id_before": "uuid", "experiment_id_after": "uuid",
+    "release_event_id": "uuid",
+    "release_date": "date",
+    "release_date_verified": "boolean",
+    "baseline_start": "date",
+    "baseline_end": "date",
+    "followup_start": "date",
+    "followup_end": "date",
+    "transition_period_start": "date",
+    "transition_period_end": "date",
+    "experiment_id_before": "uuid",
+    "experiment_id_after": "uuid",
 }
 
 
@@ -538,12 +629,20 @@ def typed_select(records, fields, types):
         return "SELECT " + ", ".join(f"NULL::{types[n]} AS {n}" for n in fields) + " WHERE false"
     rows = []
     for row in records:
-        rows.append("SELECT " + ", ".join(_literal(row.get(n), types[n]) + " AS " + n for n in fields))
+        rows.append(
+            "SELECT " + ", ".join(_literal(row.get(n), types[n]) + " AS " + n for n in fields)
+        )
     return "\nUNION ALL\n".join(rows)
 
 
 def capability_select(capabilities):
-    fields = ("network_state", "experiment_state", "release_state", "sentiment_state", "topic_state")
+    fields = (
+        "network_state",
+        "experiment_state",
+        "release_state",
+        "sentiment_state",
+        "topic_state",
+    )
     row = {x: str(capabilities.get(x, "NOT_CHECKED")) for x in fields}
     return typed_select([row], fields, {x: "text" for x in fields})
 
@@ -556,18 +655,22 @@ def _replace(text, markers, replacement):
         return text
     if text.count(start) != 1 or text.count(end) != 1 or text.index(start) > text.index(end):
         raise MetadataError("SQL compilation markers must be unique and ordered")
-    return text[: text.index(start) + len(start)] + "\n" + replacement + "\n" + text[text.index(end) :]
+    return (
+        text[: text.index(start) + len(start)] + "\n" + replacement + "\n" + text[text.index(end) :]
+    )
 
 
 def render_sql(text, experiment, release, capabilities):
     if not experiment.valid or not release.valid:
         raise MetadataError("invalid private metadata cannot be compiled")
     rendered = _replace(
-        text, EXP_MARKERS,
+        text,
+        EXP_MARKERS,
         typed_select(experiment.records, EXPERIMENT_REPORT_FIELDS, EXP_TYPES),
     )
     rendered = _replace(
-        rendered, REL_MARKERS,
+        rendered,
+        REL_MARKERS,
         typed_select(release.records, RELEASE_REPORT_FIELDS, REL_TYPES),
     )
     rendered = _replace(rendered, CAP_MARKERS, capability_select(capabilities))
@@ -583,5 +686,10 @@ def render_sql(text, experiment, release, capabilities):
 
 
 def manifest_fingerprint(report):
-    safe = [{k: (v.isoformat() if isinstance(v, (dt.date, dt.datetime)) else v) for k, v in r.items()} for r in report.records]
-    return hashlib.sha256(json.dumps(safe, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    safe = [
+        {k: (v.isoformat() if isinstance(v, (dt.date, dt.datetime)) else v) for k, v in r.items()}
+        for r in report.records
+    ]
+    return hashlib.sha256(
+        json.dumps(safe, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()

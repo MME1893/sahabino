@@ -72,9 +72,7 @@ def load_manifest(path=MANIFEST):
         path = (ROOT / q["sql"]).resolve()
         if not path.is_relative_to((ROOT / "questions").resolve()) or not path.is_file():
             raise SyncError("Question SQL path escapes questions/ or absent")
-        sql = render_sql(
-            path.read_text(), validate_experiment(), validate_release(), {}
-        )
+        sql = render_sql(path.read_text(), validate_experiment(), validate_release(), {})
         raw_sql = render_unfiltered(sql)
         clean = re.sub(r"/\*.*?\*/|--[^\n]*", " ", raw_sql, flags=re.S)
         if (
@@ -168,7 +166,8 @@ class HTTPAPI:
             allow_remote and u.scheme == "https"
         ):
             raise SyncError(
-                "Only loopback allowed by default; remote requires explicit --allow-remote with HTTPS"
+                "Only loopback allowed by default; remote "\
+                    "requires explicit --allow-remote with HTTPS"
             )
         if u.scheme not in ("http", "https"):
             raise SyncError("Invalid API endpoint scheme")
@@ -572,7 +571,10 @@ def check_source(api, manifest, experiment=None, release=None):
         capture_count = dataset("SELECT count(*)::bigint FROM public.network_captures")[0][0]
         network_state = "NETWORK_EMPTY" if capture_count == 0 else "NETWORK_DATA_AVAILABLE"
 
-    if experiment.records and network_state not in ("NETWORK_SCHEMA_MISSING", "NETWORK_GRANTS_MISSING"):
+    if experiment.records and network_state not in (
+        "NETWORK_SCHEMA_MISSING",
+        "NETWORK_GRANTS_MISSING",
+    ):
         ids = ",".join("'" + row["capture_id"] + "'::uuid" for row in experiment.records)
         db_rows = dataset(
             "SELECT nc.id::text,a.package_name,nc.scenario,nc.transfer_file_size_bytes,nc.status,"
@@ -592,16 +594,30 @@ def check_source(api, manifest, experiment=None, release=None):
                 raise SyncError("Verified experiment references a capture absent from the source")
             if db[1] != row["application_package"] or db[2] != row["scenario"]:
                 raise SyncError("Experiment capture attribution/scenario conflicts with source")
-            if db[3] != row["test_file_size_bytes"] or db[4] != "analyzed" or not row["transfer_completed"]:
+            if (
+                db[3] != row["test_file_size_bytes"]
+                or db[4] != "analyzed"
+                or not row["transfer_completed"]
+            ):
                 raise SyncError("Experiment transfer size/status is incomplete or inconsistent")
             if db[5] and db[6] and db[7] and db[8] == 0 and db[9] and db[10] is not None:
                 key = tuple(
                     row[name]
                     for name in (
-                        "experiment_id", "session_id", "application_package", "scenario",
-                        "file_cohort_id", "test_file_size_bytes", "app_version", "device_model",
-                        "android_version", "network_type", "network_profile", "capture_tool",
-                        "capture_tool_version", "experiment_phase",
+                        "experiment_id",
+                        "session_id",
+                        "application_package",
+                        "scenario",
+                        "file_cohort_id",
+                        "test_file_size_bytes",
+                        "app_version",
+                        "device_model",
+                        "android_version",
+                        "network_type",
+                        "network_profile",
+                        "capture_tool",
+                        "capture_tool_version",
+                        "experiment_phase",
                     )
                 )
                 eligible_groups[key] = eligible_groups.get(key, 0) + 1
@@ -613,7 +629,9 @@ def check_source(api, manifest, experiment=None, release=None):
                 else "NETWORK_COMPARISON_INSUFFICIENT"
             )
     else:
-        experiment_state = "MANIFEST_NOT_SUPPLIED" if not experiment.records else "NETWORK_NOT_READY"
+        experiment_state = (
+            "MANIFEST_NOT_SUPPLIED" if not experiment.records else "NETWORK_NOT_READY"
+        )
 
     capabilities = {
         "network_state": network_state,
@@ -871,7 +889,9 @@ class Sync:
                 "network_state": "NETWORK_SCHEMA_MISSING",
                 "experiment_state": "MANIFEST_NOT_SUPPLIED",
                 "release_state": "MANIFEST_NOT_SUPPLIED",
-                "sentiment_state": "SENTIMENT_DATA_AVAILABLE" if capabilities else "SENTIMENT_UNAVAILABLE",
+                "sentiment_state": "SENTIMENT_DATA_AVAILABLE"
+                if capabilities
+                else "SENTIMENT_UNAVAILABLE",
                 "topic_state": "ANNOTATIONS_UNAVAILABLE",
             }
         self.context = (self.context[0], self.context[1], capabilities)
@@ -895,7 +915,9 @@ class Sync:
             )
         for d in self.m["dashboards"]:
             enabled_questions = {
-                q["key"] for q in self.m["questions"] if capability_enabled(q["capability"], capabilities)
+                q["key"]
+                for q in self.m["questions"]
+                if capability_enabled(q["capability"], capabilities)
             }
             disabled_cards = [
                 card["question"] for card in d["cards"] if card["question"] not in enabled_questions
@@ -944,10 +966,7 @@ def main(argv=None, api_override=None):
             print(
                 "SKIP_CAPABILITY: sentiment schema/grants or classified data unavailable; optional cards/dashboard withheld"
             )
-        print(
-            "CAPABILITIES: "
-            + ", ".join(k + "=" + v for k, v in sorted(capabilities.items()))
-        )
+        print("CAPABILITIES: " + ", ".join(k + "=" + v for k, v in sorted(capabilities.items())))
         sync = Sync(
             api,
             m,
