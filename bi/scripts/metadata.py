@@ -110,6 +110,10 @@ EXP_MARKERS = ("/*__EXPERIMENT_ROWS_START__*/", "/*__EXPERIMENT_ROWS_END__*/")
 REL_MARKERS = ("/*__RELEASE_ROWS_START__*/", "/*__RELEASE_ROWS_END__*/")
 CAP_MARKERS = ("/*__CAPABILITY_ROWS_START__*/", "/*__CAPABILITY_ROWS_END__*/")
 SENT_MARKERS = ("/*__SENTIMENT_COLUMNS_START__*/", "/*__SENTIMENT_COLUMNS_END__*/")
+OPTIONAL_NETWORK_MARKERS = (
+    "/*__OPTIONAL_NETWORK_START__*/",
+    "/*__OPTIONAL_NETWORK_END__*/",
+)
 HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
 PACKAGE = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$")
 
@@ -211,6 +215,7 @@ def _reject_template_controls(raw, prefix, errors):
         *REL_MARKERS,
         *CAP_MARKERS,
         *SENT_MARKERS,
+        *OPTIONAL_NETWORK_MARKERS,
     )
     for name, value in raw.items():
         if isinstance(value, str) and any(token in value for token in forbidden):
@@ -660,6 +665,20 @@ def _replace(text, markers, replacement):
     )
 
 
+def _optional_block(text, markers, enabled, disabled_replacement):
+    start, end = markers
+    if (start in text) != (end in text):
+        raise MetadataError("unbalanced SQL compilation markers")
+    if start not in text:
+        return text
+    if text.count(start) != 1 or text.count(end) != 1 or text.index(start) > text.index(end):
+        raise MetadataError("SQL compilation markers must be unique and ordered")
+    before = text[: text.index(start)]
+    body = text[text.index(start) + len(start) : text.index(end)]
+    after = text[text.index(end) + len(end) :]
+    return before + (body if enabled else "\n" + disabled_replacement + "\n") + after
+
+
 def render_sql(text, experiment, release, capabilities):
     if not experiment.valid or not release.valid:
         raise MetadataError("invalid private metadata cannot be compiled")
@@ -674,6 +693,29 @@ def render_sql(text, experiment, release, capabilities):
         typed_select(release.records, RELEASE_REPORT_FIELDS, REL_TYPES),
     )
     rendered = _replace(rendered, CAP_MARKERS, capability_select(capabilities))
+    network_available = capabilities.get("network_state") in {
+        "NETWORK_SCHEMA_READY",
+        "NETWORK_EMPTY",
+        "NETWORK_DATA_AVAILABLE",
+        "NETWORK_COMPARISON_INSUFFICIENT",
+        "NETWORK_COMPARISON_READY",
+    }
+    empty_network = """network AS (
+ SELECT NULL::uuid release_event_id,NULL::text application_package,NULL::text scenario,
+  NULL::text file_cohort_id,NULL::bigint test_file_size_bytes,NULL::text device_model,
+  NULL::text android_version,NULL::text network_type,NULL::text network_profile,
+  NULL::text capture_tool,NULL::text capture_tool_version,
+  NULL::bigint network_before_manifest_n,NULL::bigint network_after_manifest_n,
+  NULL::bigint network_before_observed_n,NULL::bigint network_after_observed_n,
+  NULL::bigint network_before_analyzed_n,NULL::bigint network_after_analyzed_n,
+  NULL::bigint before_throughput_eligible_n,NULL::bigint after_throughput_eligible_n,
+  NULL::bigint before_amplification_eligible_n,NULL::bigint after_amplification_eligible_n,
+  NULL::bigint before_recovery_eligible_n,NULL::bigint after_recovery_eligible_n,
+  NULL::timestamptz network_latest_source_at WHERE false
+)"""
+    rendered = _optional_block(
+        rendered, OPTIONAL_NETWORK_MARKERS, network_available, empty_network
+    )
     sentiment_columns = (
         "ro.sentiment_status::text AS sentiment_status, "
         "ro.sentiment_label::text AS sentiment_label, "

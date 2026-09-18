@@ -43,7 +43,7 @@ LEGACY_DASHBOARD_SHA256 = {
     "reviews": "a2710ef081755110254f3d6c3d55a15d99d94ffb31035ebfc2350ba16f6d7df9",
     "sentiment": "616cbc643452fef07041cd6572b63fb5beb2d5fdeee405c91d6bb647ac9b67fc",
     "network": "e47e99b11ab9e6abe2c28e1226b663285db74bbb895205705a1df0da9c9eec20",
-    "experience": "4c983a34230df97098c95d741df303ddb3651c5f84852ab76e9298690417ffa5",
+    "experience": "0ba06ce648623f3e495d941eaf0582aa50dc0fb66a2483c5f5e667c8089365f4",
     "release": "b7fdfa0dc1818b1cae6b198280778154d5a88dc438c254daf726b4a50fc0f1c6",
 }
 
@@ -66,10 +66,19 @@ def test_existing_q01_q24_and_dashboard_definitions_are_unchanged():
 class FakeAPI:
     """Contract-shaped fake, NOT a claim of real Metabase end-to-end compatibility."""
 
-    def __init__(self, version="v0.63.18", sentiment=True, network=True):
+    def __init__(
+        self,
+        version="v0.63.18",
+        sentiment=True,
+        network=True,
+        network_schema=None,
+        network_grants=None,
+    ):
         self.version = version
         self.sentiment = sentiment
         self.network = network
+        self.network_schema = network_schema
+        self.network_grants = network_grants
         self.db = True
         self.fail = None
         self.denied = False
@@ -131,7 +140,11 @@ class FakeAPI:
                                 (
                                     self.sentiment
                                     if "sentiment_" in query
-                                    else self.network
+                                    else (
+                                        self.network
+                                        if self.network_schema is None
+                                        else self.network_schema
+                                    )
                                     if "network_" in query
                                     else True
                                 )
@@ -144,7 +157,9 @@ class FakeAPI:
                 value = (
                     self.sentiment
                     if "sentiment_" in query
-                    else self.network
+                    else (
+                        self.network if self.network_grants is None else self.network_grants
+                    )
                     if "network_" in query
                     else True
                 )
@@ -363,6 +378,47 @@ def test_network_capability_removal_preserves_existing_cards(tmp_path):
     actions = run_sync(api, state, True)
     assert ("SKIP_CAPABILITY_PRESERVE", "dashboard:network") in actions
     assert [x["card_id"] for x in dashboard["dashcards"]] == old_ids
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        FakeAPI(network=False, network_schema=False, network_grants=False),
+        FakeAPI(network=False, network_schema=True, network_grants=False),
+    ],
+    ids=["network-schema-missing", "network-grants-missing"],
+)
+def test_q41_base_release_provisions_without_network_access(tmp_path, api):
+    run_sync(api, tmp_path / "state", True)
+    q41 = next(card for card in api.data["card"].values() if "question:q41" in card["description"])
+    saved_sql = q41["dataset_query"]["native"]["query"]
+    assert "public.network_captures" not in saved_sql
+    assert "public.network_analysis_results" not in saved_sql
+    assert "base_store_review_ready_network_unavailable" in saved_sql
+
+
+def test_network_loss_preserves_every_existing_managed_object_identity(tmp_path):
+    api = FakeAPI(network=True)
+    state = tmp_path / "state"
+    run_sync(api, state, True)
+    before = {
+        kind: {item["description"]: item["id"] for item in api.data[kind].values()}
+        for kind in ("collection", "card", "dashboard")
+    }
+    api.network = False
+    api.network_schema = False
+    api.network_grants = False
+    run_sync(api, state, True)
+    after = {
+        kind: {item["description"]: item["id"] for item in api.data[kind].values()}
+        for kind in ("collection", "card", "dashboard")
+    }
+    assert after == before
+    second = run_sync(api, state, True)
+    assert all(
+        action[0] in {"SKIP", "SKIP_CAPABILITY", "SKIP_CAPABILITY_PRESERVE"}
+        for action in second
+    )
 
 
 def test_private_manifests_compile_and_gate_against_source(tmp_path):

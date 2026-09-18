@@ -50,7 +50,7 @@ def hash_value(v):
 
 
 def load_manifest(path=MANIFEST):
-    m = json.loads(Path(path).read_text())
+    m = json.loads(Path(path).read_text(encoding="utf-8"))
     if (
         m.get("schema_version") != 1
         or m.get("metabase_version") != "v0.63.18"
@@ -72,7 +72,9 @@ def load_manifest(path=MANIFEST):
         path = (ROOT / q["sql"]).resolve()
         if not path.is_relative_to((ROOT / "questions").resolve()) or not path.is_file():
             raise SyncError("Question SQL path escapes questions/ or absent")
-        sql = render_sql(path.read_text(), validate_experiment(), validate_release(), {})
+        sql = render_sql(
+            path.read_text(encoding="utf-8"), validate_experiment(), validate_release(), {}
+        )
         raw_sql = render_unfiltered(sql)
         clean = re.sub(r"/\*.*?\*/|--[^\n]*", " ", raw_sql, flags=re.S)
         if (

@@ -90,7 +90,7 @@ These definitions are implemented, but their evidence remains capability-gated. 
 | Q38 | How did controlled Network metrics differ? | Release x matched scenario/file/device/Android/network/tool conditions; separate observed/eligible/excluded counts and at least 3 per period for each metric, otherwise its delta is NULL. | Table; app/event/scenario/profile/date. |
 | Q39 | How did Store observations differ? | Release x historical locale; median daily score and signed endpoint count differences. | Table; app/event/locale/date. |
 | Q40 | How did sampled User Voice cohorts differ? | Release x locale; each period has an explicit exclusive UTC cutoff and latest observation by that cutoff. Unavailable historical sentiment remains NULL/not classified. | Table; app/event/locale/date. |
-| Q41 | Which evidence domains cover both periods? | App x release x scenario x matched network conditions after joining actual analyzed metric-eligible captures; manifest row count alone never establishes readiness. | Evidence matrix; app/event/date. |
+| Q41 | Which evidence domains cover both periods? | App x release x historical Store country/language x optional scenario/matched Network conditions. Store readiness requires observations in both periods for the same crawl locale; Review evidence is joined only at that locale. Network SQL is compiled out when its schema or grants are unavailable, while the base Store/Review matrix remains provisionable. Manifest row count alone never establishes Network readiness. | Evidence matrix; app/event/date. |
 | Q42 | What limits interpretation? | One event; missing evidence and standing limitations. | Table; app/event/date. |
 
 ## Added dashboards

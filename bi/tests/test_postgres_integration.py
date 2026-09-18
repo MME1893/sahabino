@@ -270,7 +270,7 @@ def test_condition_metric_release_and_historical_regressions(pg):
         assert gated["effective_mbps_after_minus_before"] is None
         assert gated["amplification_after_minus_before"] is None
         assert gated["tcp_recovery_tax_after_minus_before"] is None
-        assert rows(pg, 41)[0]["evidence_matrix_status"] == "network_metric_period_insufficient"
+        assert rows(pg, 41)[0]["evidence_matrix_status"] != "multi_source_descriptive_evidence_available"
     finally:
         admin(
             "sahabino",
@@ -300,6 +300,111 @@ def test_condition_metric_release_and_historical_regressions(pg):
         if row["package_name"] == "ir.android.baham" and row["utc_day"] == "2026-09-01"
     )
     assert abs(float(cohort_day["mean_sampled_review_stars_1_to_5"]) - (8 / 3)) < 0.000001
+
+
+def test_q41_network_optional_and_historical_locale_gate(pg):
+    _, admin = pg
+    no_schema_capabilities = {**CAPABILITIES, "network_state": "NETWORK_SCHEMA_MISSING"}
+    try:
+        admin("sahabino", "ALTER TABLE public.network_analysis_results RENAME TO network_analysis_results_hidden; ALTER TABLE public.network_captures RENAME TO network_captures_hidden;")
+        base_rows = rows(pg, 41, capabilities=no_schema_capabilities)
+        assert base_rows
+        assert all(row["network_before_n"] is None for row in base_rows)
+    finally:
+        admin("sahabino", "ALTER TABLE public.network_captures_hidden RENAME TO network_captures; ALTER TABLE public.network_analysis_results_hidden RENAME TO network_analysis_results;")
+
+    revoke_columns = """
+DO $block$ DECLARE item record; BEGIN
+ FOR item IN SELECT table_name,string_agg(quote_ident(column_name),',' ORDER BY ordinal_position) cols
+  FROM information_schema.columns
+  WHERE table_schema='public' AND table_name IN('network_captures','network_analysis_results')
+  GROUP BY table_name
+ LOOP
+  EXECUTE format('REVOKE SELECT (%s) ON public.%I FROM sahabino_bi_reader',item.cols,item.table_name);
+ END LOOP;
+END $block$;
+"""
+    try:
+        admin("sahabino", revoke_columns)
+        no_grants = rows(
+            pg, 41, capabilities={**CAPABILITIES, "network_state": "NETWORK_GRANTS_MISSING"}
+        )
+        assert no_grants and all(row["network_before_n"] is None for row in no_grants)
+    finally:
+        admin(
+            "postgres",
+            (BI / "provisioning" / "roles_and_grants.sql.example").read_text(),
+        )
+
+    same_locale = next(
+        row
+        for row in rows(pg, 41)
+        if row["store_country_code"] == "IR" and row["store_language_code"] == "fa"
+    )
+    assert same_locale["store_before_days"] > 0 and same_locale["store_after_days"] > 0
+    assert same_locale["store_locale_status"] == "store_same_locale_ready"
+
+    try:
+        admin(
+            "sahabino",
+            "UPDATE crawl_tasks SET country_code='US',language_code='en' WHERE id IN "
+            "('00000000-0000-0000-0000-000000001004','00000000-0000-0000-0000-000000001005',"
+            "'00000000-0000-0000-0000-000000001014');"
+            "UPDATE crawl_tasks SET country_code='GB',language_code='en' WHERE id="
+            "'00000000-0000-0000-0000-000000001013';",
+        )
+        mismatched = rows(pg, 41)
+        assert mismatched
+        assert all(row["store_locale_status"] != "store_same_locale_ready" for row in mismatched)
+        assert all(
+            row["evidence_matrix_status"] != "multi_source_descriptive_evidence_available"
+            for row in mismatched
+        )
+    finally:
+        admin(
+            "sahabino",
+            "UPDATE crawl_tasks SET country_code='IR',language_code='fa' WHERE id IN "
+            "('00000000-0000-0000-0000-000000001004','00000000-0000-0000-0000-000000001005',"
+            "'00000000-0000-0000-0000-000000001014');"
+            "UPDATE crawl_tasks SET country_code='US',language_code='en' WHERE id="
+            "'00000000-0000-0000-0000-000000001013';",
+        )
+
+    try:
+        admin(
+            "sahabino",
+            "INSERT INTO crawl_tasks VALUES "
+            "('00000000-0000-0000-0000-000000002099','00000000-0000-0000-0000-000000000001',"
+            "'reviews','succeeded','en','US');"
+            "INSERT INTO reviews(id,application_id,external_review_id,source_at,author_name,score,content,"
+            "source_adapter,first_observed_at,last_observed_at) VALUES "
+            "(199,'00000000-0000-0000-0000-000000000001','private-199','2026-09-05 10:00Z',"
+            "'PRIVATE',4,'SECRET TEXT','synthetic','2026-09-05 10:00Z','2026-09-05 10:00Z');"
+            "INSERT INTO review_observations VALUES "
+            "('00000000-0000-0000-0000-000000002099',199,'2026-09-05 10:00Z',1,4,0,'synthetic');",
+        )
+        incompatible = next(
+            row
+            for row in rows(pg, 41)
+            if row["store_country_code"] == "IR" and row["store_language_code"] == "fa"
+        )
+        assert incompatible["review_after_n"] is None
+        assert incompatible["store_review_locale_status"] == "same_locale_review_cohort_missing"
+        admin(
+            "sahabino",
+            "UPDATE crawl_tasks SET country_code='IR',language_code='fa' WHERE id="
+            "'00000000-0000-0000-0000-000000002099';",
+        )
+        compatible = next(
+            row
+            for row in rows(pg, 41)
+            if row["store_country_code"] == "IR" and row["store_language_code"] == "fa"
+        )
+        assert compatible["review_before_n"] > 0 and compatible["review_after_n"] == 1
+        assert compatible["store_review_locale_status"] == "same_locale_review_cohort_ready"
+        assert compatible["evidence_matrix_status"] == "multi_source_descriptive_evidence_available"
+    finally:
+        admin("sahabino", "DELETE FROM review_observations WHERE review_id=199; DELETE FROM reviews WHERE id=199; DELETE FROM crawl_tasks WHERE id='00000000-0000-0000-0000-000000002099';")
 
 
 def test_network_sensitive_columns_and_write_denied(pg):

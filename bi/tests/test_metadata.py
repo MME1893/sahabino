@@ -208,6 +208,37 @@ class MetadataTests(unittest.TestCase):
                 {},
             )
 
+    def test_q41_compiles_network_references_only_when_available(self):
+        source = (BI / "questions" / "q41_release_combined_evidence.sql").read_text(
+            encoding="utf-8"
+        )
+        experiment = validate_experiment()
+        release = validate_release()
+        without_network = render_sql(
+            source,
+            experiment,
+            release,
+            {"network_state": "NETWORK_SCHEMA_MISSING"},
+        )
+        self.assertNotIn("public.network_captures", without_network)
+        self.assertNotIn("public.network_analysis_results", without_network)
+        with_network = render_sql(
+            source,
+            experiment,
+            release,
+            {"network_state": "NETWORK_COMPARISON_READY"},
+        )
+        self.assertIn("public.network_captures", with_network)
+        self.assertIn("public.network_analysis_results", with_network)
+
+        with self.assertRaisesRegex(MetadataError, "unbalanced"):
+            render_sql(
+                "WITH x AS (/*__OPTIONAL_NETWORK_START__*/ SELECT 1) SELECT 1;",
+                experiment,
+                release,
+                {},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
