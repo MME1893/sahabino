@@ -108,6 +108,32 @@ DO $$ BEGIN
        || 'ON TABLE public.review_observations TO sahabino_bi_reader';
  END IF;
 END $$;
+-- Optional network add-on.  A wholly absent schema is a supported state; a
+-- partially deployed schema fails closed.  Sensitive storage keys, filenames,
+-- hashes, analyzer warning payloads and errors are deliberately excluded.
+DO $$ BEGIN
+ IF to_regclass('public.network_captures') IS NULL AND
+    to_regclass('public.network_analysis_results') IS NULL THEN
+   RAISE NOTICE 'Network schema absent; network BI capability remains gated';
+ ELSIF to_regclass('public.network_captures') IS NULL OR
+       to_regclass('public.network_analysis_results') IS NULL THEN
+   RAISE EXCEPTION 'Partial network schema; network grants refused';
+ ELSE
+   EXECUTE 'GRANT SELECT (id,application_id,scenario,capture_size_bytes,transfer_file_size_bytes,'
+    || 'status,created_at,uploaded_at,analysis_finished_at) ON public.network_captures TO sahabino_bi_reader';
+   EXECUTE 'GRANT SELECT (capture_id,application_id,package_name,scenario,analyzed_at,capture_duration_ms,'
+    || 'truncated_packet_count,analysis_warning_count,direction_metadata_available,handshake_observed,'
+    || 'tcp_present,quic_present,other_udp_present,tcp_rtt_available,quic_initial_rtt_available,'
+    || 'quic_spin_rtt_available,dns_metrics_available,comparison_ready,network_bytes_total,'
+    || 'ip_transport_header_bytes,observed_primary_payload_span_ms,average_network_throughput_mbps,'
+    || 'effective_file_throughput_mbps,total_transfer_amplification_ratio,'
+    || 'primary_direction_amplification_ratio,reverse_path_cost_ratio,ip_transport_header_overhead_ratio,'
+    || 'tcp_byte_share,quic_byte_share,other_udp_byte_share,tcp_connection_count,'
+    || 'tcp_handshake_success_rate,tcp_initial_rtt_avg_ms,tcp_initial_rtt_p50_ms,tcp_ack_rtt_p95_ms,'
+    || 'tcp_retransmission_count,tcp_retransmission_rate,tcp_recovery_tax,tcp_receiver_stall_ratio,'
+    || 'tcp_reset_rate) ON public.network_analysis_results TO sahabino_bi_reader';
+ END IF;
+END $$;
 -- Mandatory policy audit: no inherited grants, no ownership, no PUBLIC-mediated escalation.
 -- bi/scripts/preflight.py performs a column-by-column check and denies dangerous grants.
 DO $$ BEGIN
@@ -122,5 +148,12 @@ DO $$ BEGIN
     has_column_privilege('sahabino_bi_reader','public.reviews','author_name','SELECT') OR
     has_column_privilege('sahabino_bi_reader','public.reviews','external_review_id','SELECT') THEN
       RAISE EXCEPTION 'Source BI reader privilege audit failed (possibly PUBLIC grant); STOP; DBA must inspect; do not revoke source PUBLIC blindly';
+ END IF;
+ IF to_regclass('public.network_captures') IS NOT NULL AND
+   (has_table_privilege('sahabino_bi_reader','public.network_captures','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','object_key','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','original_filename','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','error_message','SELECT')) THEN
+   RAISE EXCEPTION 'Network BI reader privilege audit failed; sensitive or broad access detected';
  END IF;
 END $$;

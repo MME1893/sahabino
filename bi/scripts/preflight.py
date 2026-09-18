@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from network_attach import ALIAS, NetworkError, discover, inspect, membership
-from schema import BASE, SENSITIVE, SENTIMENT
+from schema import BASE, NETWORK, SENSITIVE, SENTIMENT
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,6 +58,7 @@ def query(container, user, db, sql, password_file=None):
 def privilege_sql():
     required = [(t, c) for t, cs in BASE.items() for c in cs]
     optional = [(t, c) for t, cs in SENTIMENT.items() for c in cs]
+    network = [(t, c) for t, cs in NETWORK.items() for c in cs]
     sensitive = [(t, c) for t, cs in SENSITIVE.items() for c in cs]
 
     def items(rows):
@@ -66,12 +67,19 @@ def privilege_sql():
     return f"""
 WITH required(table_name,column_name) AS (VALUES {items(required)}),
  optional(table_name,column_name) AS (VALUES {items(optional)}),
+ network(table_name,column_name) AS (VALUES {items(network)}),
  sensitive(table_name,column_name) AS (VALUES {items(sensitive)}),
  present AS (SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public'),
+ physical AS (
+  SELECT c.relname table_name,a.attname column_name
+  FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped
+ ),
  forbidden_columns AS (
   SELECT p.table_name,p.column_name FROM present p
   WHERE NOT EXISTS(SELECT 1 FROM required r WHERE r.table_name=p.table_name AND r.column_name=p.column_name)
     AND NOT EXISTS(SELECT 1 FROM optional o WHERE o.table_name=p.table_name AND o.column_name=p.column_name)
+    AND NOT EXISTS(SELECT 1 FROM network nw WHERE nw.table_name=p.table_name AND nw.column_name=p.column_name)
     AND has_column_privilege(current_user,format('public.%I',p.table_name),p.column_name,'SELECT')
  ), extra_tables AS (
   SELECT n.nspname,c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -90,8 +98,13 @@ SELECT row_to_json(x)::text FROM (
  SELECT current_user AS role,current_database() AS db,
   (SELECT count(*) FROM required r WHERE NOT EXISTS(SELECT 1 FROM present p WHERE p.table_name=r.table_name AND p.column_name=r.column_name)) AS missing_base,
   (SELECT count(*) FROM required r WHERE NOT has_column_privilege(current_user,format('public.%I',r.table_name),r.column_name,'SELECT')) AS denied_base,
-  (SELECT count(*) FROM optional o WHERE NOT EXISTS(SELECT 1 FROM present p WHERE p.table_name=o.table_name AND p.column_name=o.column_name)) AS missing_sentiment,
-  (SELECT count(*) FROM optional o WHERE EXISTS(SELECT 1 FROM present p WHERE p.table_name=o.table_name AND p.column_name=o.column_name) AND NOT has_column_privilege(current_user,format('public.%I',o.table_name),o.column_name,'SELECT')) AS denied_sentiment,
+  (SELECT count(*) FROM optional o WHERE NOT EXISTS(SELECT 1 FROM physical p WHERE p.table_name=o.table_name AND p.column_name=o.column_name)) AS missing_sentiment,
+  (SELECT count(*) FROM optional o JOIN physical p USING(table_name,column_name)
+    WHERE NOT has_column_privilege(current_user,format('public.%I',p.table_name),p.column_name,'SELECT')) AS denied_sentiment,
+  (SELECT count(*) FROM network nw WHERE NOT EXISTS(SELECT 1 FROM physical p
+    WHERE p.table_name=nw.table_name AND p.column_name=nw.column_name)) AS missing_network,
+  (SELECT count(*) FROM network nw JOIN physical p USING(table_name,column_name)
+    WHERE NOT has_column_privilege(current_user,format('public.%I',p.table_name),p.column_name,'SELECT')) AS denied_network,
   (SELECT count(*) FROM forbidden_columns) AS forbidden_column_access,
   (SELECT count(*) FROM extra_tables) AS broad_table_access,
   (SELECT count(*) FROM write_tables) AS writable_tables,
@@ -251,6 +264,21 @@ def evaluate(args):
             out(
                 "WARN",
                 f"Sentiment gated: missing columns={src['missing_sentiment']}, denied columns={src['denied_sentiment']}; review/store remain available",
+            )
+        if src["missing_network"]:
+            out(
+                "WARN",
+                f"Network capability state=NETWORK_SCHEMA_MISSING columns={src['missing_network']}",
+            )
+        elif src["denied_network"]:
+            out(
+                "WARN",
+                f"Network capability state=NETWORK_GRANTS_MISSING columns={src['denied_network']}",
+            )
+        else:
+            out(
+                "OK",
+                "Network capability state=NETWORK_SCHEMA_READY (data sufficiency not checked here)",
             )
         for k in (
             "forbidden_column_access",
