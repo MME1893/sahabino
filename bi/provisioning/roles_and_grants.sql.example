@@ -1,0 +1,159 @@
+\set ON_ERROR_STOP on
+-- Run ONLY after DBA review against the existing Sahabino PostgreSQL instance.
+-- psql -X -v ON_ERROR_STOP=1 -U <admin> -d postgres -f roles_and_grants.sql.example
+-- Passwords MUST be assigned interactively with \password (never place them here).
+-- Idempotent for already-compliant roles/database; fail closed for unsafe existing setup.
+\connect postgres
+SELECT 'CREATE ROLE metabase_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT'
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='metabase_app') \gexec
+SELECT 'CREATE ROLE sahabino_bi_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT'
+ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='sahabino_bi_reader') \gexec
+DO $$
+DECLARE r text;
+BEGIN
+ FOR r IN SELECT unnest(ARRAY['metabase_app','sahabino_bi_reader']) LOOP
+   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=r AND
+     (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR NOT rolcanlogin OR rolinherit)) THEN
+       RAISE EXCEPTION 'Unsafe pre-existing role attributes for %: DBA must inspect; no automatic role alteration',r;
+   END IF;
+   IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.member
+      WHERE p.rolname=r) THEN
+       RAISE EXCEPTION 'Existing memberships for %; manually audit/revoke before BI provisioning',r;
+   END IF;
+ END LOOP;
+ IF EXISTS (SELECT 1 FROM pg_database WHERE datname='sahabino' AND datdba=(SELECT oid FROM pg_roles WHERE rolname='sahabino_bi_reader')) THEN
+     RAISE EXCEPTION 'Reader owns source database; revoke ownership before proceeding';
+ END IF;
+END $$;
+SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_database WHERE datname='metabase_app') THEN 'false' ELSE 'true' END AS metadata_new \gset
+\if :metadata_new
+ CREATE DATABASE metabase_app OWNER metabase_app ENCODING 'UTF8' TEMPLATE template0;
+ -- PUBLIC privileges changed ONLY on newly created BI metadata DB, not application DB.
+ REVOKE ALL PRIVILEGES ON DATABASE metabase_app FROM PUBLIC;
+\else
+ DO $$ BEGIN
+  IF (SELECT datdba FROM pg_database WHERE datname='metabase_app') <>
+       (SELECT oid FROM pg_roles WHERE rolname='metabase_app') THEN
+      RAISE EXCEPTION 'Existing metadata database not owned by metabase_app; manual review required';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_database d, LATERAL aclexplode(COALESCE(d.datacl,acldefault('d',d.datdba))) a
+      WHERE d.datname='metabase_app' AND a.grantee=0 AND a.privilege_type='CONNECT') THEN
+      RAISE EXCEPTION 'Existing metadata database permits PUBLIC CONNECT; manually audit before any ACL change';
+  END IF;
+ END $$;
+\endif
+GRANT CONNECT, CREATE, TEMPORARY ON DATABASE metabase_app TO metabase_app;
+-- Verify metadata database object ownership separately when reusing a pre-existing database.
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino SET default_transaction_read_only = on;
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino SET statement_timeout = '30s';
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino SET lock_timeout = '5s';
+ALTER ROLE sahabino_bi_reader IN DATABASE sahabino SET idle_in_transaction_session_timeout = '60s';
+\connect sahabino
+-- An existing PUBLIC TEMP grant on sahabino/postgres can make metadata role writable
+-- outside its own DB.  We cannot revoke PUBLIC broadly without touching app roles.
+-- Fail safely; require separate DBA-approved source ACL or pg_hba policy review.
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_database d WHERE d.datallowconn
+     AND d.datname <> 'metabase_app'
+     AND (has_database_privilege('metabase_app',d.datname,'CREATE')
+       OR has_database_privilege('metabase_app',d.datname,'TEMPORARY'))) THEN
+   RAISE EXCEPTION 'Metadata role has CREATE/TEMP on another DB (possibly via PUBLIC); DBA must resolve source ACL safely; no broad automatic revocation';
+ END IF;
+ IF has_schema_privilege('metabase_app','public','CREATE') THEN
+   RAISE EXCEPTION 'Metadata role can CREATE in Sahabino public schema; refuse';
+ END IF;
+END $$;
+-- Source database permissions: ONLY BI role is changed; PUBLIC/application roles untouched.
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspowner=(SELECT oid FROM pg_roles WHERE rolname='sahabino_bi_reader')) OR
+    EXISTS (SELECT 1 FROM pg_class WHERE relowner=(SELECT oid FROM pg_roles WHERE rolname='sahabino_bi_reader')) THEN
+    RAISE EXCEPTION 'Reader owns source objects; stop for DBA ownership repair';
+ END IF;
+END $$;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sahabino_bi_reader;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sahabino_bi_reader;
+REVOKE CREATE ON SCHEMA public FROM sahabino_bi_reader;
+REVOKE TEMPORARY ON DATABASE sahabino FROM sahabino_bi_reader;
+GRANT CONNECT ON DATABASE sahabino TO sahabino_bi_reader;
+GRANT USAGE ON SCHEMA public TO sahabino_bi_reader;
+-- Never grant table-wide SELECT. Column-level lists are the entire permitted data surface.
+GRANT SELECT (id,name,package_name,language_code,country_code,is_active)
+ ON TABLE public.applications TO sahabino_bi_reader;
+GRANT SELECT (id,code,name) ON TABLE public.categories TO sahabino_bi_reader;
+GRANT SELECT (application_id,category_id,is_primary)
+ ON TABLE public.application_categories TO sahabino_bi_reader;
+GRANT SELECT (id,crawl_task_id,application_id,collected_at,min_installs,score,
+ ratings_count,reviews_count,store_updated_on,version,ad_supported,source_adapter)
+ ON TABLE public.playstore_app_snapshots TO sahabino_bi_reader;
+GRANT SELECT (id,application_id,task_type,status,language_code,country_code)
+ ON TABLE public.crawl_tasks TO sahabino_bi_reader;
+GRANT SELECT (version_num) ON TABLE public.alembic_version TO sahabino_bi_reader;
+-- Existing base review schema 0003 (no sentiment migration prerequisite):
+GRANT SELECT (id,application_id,first_observed_at)
+ ON TABLE public.reviews TO sahabino_bi_reader;
+GRANT SELECT (crawl_task_id,review_id,observed_at,score)
+ ON TABLE public.review_observations TO sahabino_bi_reader;
+-- Conditional add-on AFTER 0007 and 0008 have independently been deployed.
+-- To avoid a failure on 0006, use conditional grant; no other columns become readable.
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+  AND table_name='review_observations' AND column_name='sentiment_status') THEN
+   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+    AND table_name='review_observations' AND column_name='sentiment_label') OR
+      NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public'
+    AND table_name='review_observations' AND column_name='sentiment_language') THEN
+     RAISE EXCEPTION 'Partial sentiment schema; grant refused';
+   END IF;
+   EXECUTE 'GRANT SELECT (sentiment_status,sentiment_label,sentiment_language) '
+       || 'ON TABLE public.review_observations TO sahabino_bi_reader';
+ END IF;
+END $$;
+-- Optional network add-on.  A wholly absent schema is a supported state; a
+-- partially deployed schema fails closed.  Sensitive storage keys, filenames,
+-- hashes, analyzer warning payloads and errors are deliberately excluded.
+DO $$ BEGIN
+ IF to_regclass('public.network_captures') IS NULL AND
+    to_regclass('public.network_analysis_results') IS NULL THEN
+   RAISE NOTICE 'Network schema absent; network BI capability remains gated';
+ ELSIF to_regclass('public.network_captures') IS NULL OR
+       to_regclass('public.network_analysis_results') IS NULL THEN
+   RAISE EXCEPTION 'Partial network schema; network grants refused';
+ ELSE
+   EXECUTE 'GRANT SELECT (id,application_id,scenario,capture_size_bytes,transfer_file_size_bytes,'
+    || 'status,created_at,uploaded_at,analysis_finished_at) ON public.network_captures TO sahabino_bi_reader';
+   EXECUTE 'GRANT SELECT (capture_id,application_id,package_name,scenario,analyzed_at,capture_duration_ms,'
+    || 'truncated_packet_count,analysis_warning_count,direction_metadata_available,handshake_observed,'
+    || 'tcp_present,quic_present,other_udp_present,tcp_rtt_available,quic_initial_rtt_available,'
+    || 'quic_spin_rtt_available,dns_metrics_available,comparison_ready,network_bytes_total,'
+    || 'ip_transport_header_bytes,observed_primary_payload_span_ms,average_network_throughput_mbps,'
+    || 'effective_file_throughput_mbps,total_transfer_amplification_ratio,'
+    || 'primary_direction_amplification_ratio,reverse_path_cost_ratio,ip_transport_header_overhead_ratio,'
+    || 'tcp_byte_share,quic_byte_share,other_udp_byte_share,tcp_connection_count,'
+    || 'tcp_handshake_success_rate,tcp_initial_rtt_avg_ms,tcp_initial_rtt_p50_ms,tcp_ack_rtt_p95_ms,'
+    || 'tcp_retransmission_count,tcp_retransmission_rate,tcp_recovery_tax,tcp_receiver_stall_ratio,'
+    || 'tcp_reset_rate) ON public.network_analysis_results TO sahabino_bi_reader';
+ END IF;
+END $$;
+-- Mandatory policy audit: no inherited grants, no ownership, no PUBLIC-mediated escalation.
+-- bi/scripts/preflight.py performs a column-by-column check and denies dangerous grants.
+DO $$ BEGIN
+ IF has_database_privilege('sahabino_bi_reader','sahabino','CREATE') OR
+    has_database_privilege('sahabino_bi_reader','sahabino','TEMPORARY') OR
+    has_schema_privilege('sahabino_bi_reader','public','CREATE') OR
+    pg_has_role('sahabino_bi_reader','pg_read_all_data','MEMBER') OR
+    pg_has_role('sahabino_bi_reader','pg_write_all_data','MEMBER') OR
+    has_table_privilege('sahabino_bi_reader','public.reviews','SELECT') OR
+    has_table_privilege('sahabino_bi_reader','public.review_observations','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.reviews','content','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.reviews','author_name','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.reviews','external_review_id','SELECT') THEN
+      RAISE EXCEPTION 'Source BI reader privilege audit failed (possibly PUBLIC grant); STOP; DBA must inspect; do not revoke source PUBLIC blindly';
+ END IF;
+ IF to_regclass('public.network_captures') IS NOT NULL AND
+   (has_table_privilege('sahabino_bi_reader','public.network_captures','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','object_key','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','original_filename','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','error_message','SELECT')) THEN
+   RAISE EXCEPTION 'Network BI reader privilege audit failed; sensitive or broad access detected';
+ END IF;
+END $$;

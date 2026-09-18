@@ -1,0 +1,98 @@
+\set ON_ERROR_STOP on
+-- ADDITIVE existing-install update only. DBA review is mandatory.
+-- Run against database sahabino. This file does not create/alter roles, databases,
+-- schemas or application objects and does not revoke privileges from other roles.
+DO $$
+DECLARE missing text;
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='sahabino_bi_reader') THEN
+   RAISE EXCEPTION 'sahabino_bi_reader does not exist; stop for DBA review';
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='sahabino_bi_reader'
+   AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR rolinherit)) THEN
+   RAISE EXCEPTION 'sahabino_bi_reader has unsafe attributes; stop for DBA review';
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.member
+   WHERE r.rolname='sahabino_bi_reader') THEN
+   RAISE EXCEPTION 'sahabino_bi_reader has role memberships; stop for DBA review';
+ END IF;
+ IF to_regclass('public.network_captures') IS NULL OR
+    to_regclass('public.network_analysis_results') IS NULL THEN
+   RAISE EXCEPTION 'complete network schema is not present; no grant made';
+ END IF;
+ SELECT string_agg(v.table_name||'.'||v.column_name,', ' ORDER BY v.table_name,v.column_name)
+ INTO missing
+ FROM (VALUES
+  ('network_captures','id'),('network_captures','application_id'),('network_captures','scenario'),
+  ('network_captures','capture_size_bytes'),('network_captures','transfer_file_size_bytes'),
+  ('network_captures','status'),('network_captures','created_at'),('network_captures','uploaded_at'),
+  ('network_captures','analysis_finished_at'),
+  ('network_analysis_results','capture_id'),('network_analysis_results','application_id'),
+  ('network_analysis_results','package_name'),('network_analysis_results','scenario'),
+  ('network_analysis_results','analyzed_at'),('network_analysis_results','capture_duration_ms'),
+  ('network_analysis_results','truncated_packet_count'),('network_analysis_results','analysis_warning_count'),
+  ('network_analysis_results','direction_metadata_available'),('network_analysis_results','handshake_observed'),
+  ('network_analysis_results','tcp_present'),('network_analysis_results','quic_present'),
+  ('network_analysis_results','other_udp_present'),('network_analysis_results','tcp_rtt_available'),
+  ('network_analysis_results','quic_initial_rtt_available'),('network_analysis_results','quic_spin_rtt_available'),
+  ('network_analysis_results','dns_metrics_available'),('network_analysis_results','comparison_ready'),
+  ('network_analysis_results','network_bytes_total'),('network_analysis_results','ip_transport_header_bytes'),
+  ('network_analysis_results','observed_primary_payload_span_ms'),
+  ('network_analysis_results','average_network_throughput_mbps'),
+  ('network_analysis_results','effective_file_throughput_mbps'),
+  ('network_analysis_results','total_transfer_amplification_ratio'),
+  ('network_analysis_results','primary_direction_amplification_ratio'),
+  ('network_analysis_results','reverse_path_cost_ratio'),
+  ('network_analysis_results','ip_transport_header_overhead_ratio'),
+  ('network_analysis_results','tcp_byte_share'),('network_analysis_results','quic_byte_share'),
+  ('network_analysis_results','other_udp_byte_share'),('network_analysis_results','tcp_connection_count'),
+  ('network_analysis_results','tcp_handshake_success_rate'),('network_analysis_results','tcp_initial_rtt_avg_ms'),
+  ('network_analysis_results','tcp_initial_rtt_p50_ms'),('network_analysis_results','tcp_ack_rtt_p95_ms'),
+  ('network_analysis_results','tcp_retransmission_count'),('network_analysis_results','tcp_retransmission_rate'),
+  ('network_analysis_results','tcp_recovery_tax'),('network_analysis_results','tcp_receiver_stall_ratio'),
+  ('network_analysis_results','tcp_reset_rate')
+ ) AS v(table_name,column_name)
+ WHERE NOT EXISTS (
+  SELECT 1 FROM information_schema.columns c
+  WHERE c.table_schema='public' AND c.table_name=v.table_name AND c.column_name=v.column_name
+ );
+ IF missing IS NOT NULL THEN
+   RAISE EXCEPTION 'required network reporting columns are missing; no grant made';
+ END IF;
+ IF has_table_privilege('sahabino_bi_reader','public.network_captures','SELECT') OR
+    has_table_privilege('sahabino_bi_reader','public.network_analysis_results','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','object_key','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','original_filename','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','error_message','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_analysis_results','analysis_warnings','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_analysis_results','verified_sha256','SELECT') THEN
+   RAISE EXCEPTION 'reader already has broad or sensitive network access; stop for DBA audit';
+ END IF;
+END $$;
+
+GRANT SELECT (id,application_id,scenario,capture_size_bytes,transfer_file_size_bytes,
+ status,created_at,uploaded_at,analysis_finished_at)
+ ON TABLE public.network_captures TO sahabino_bi_reader;
+GRANT SELECT (capture_id,application_id,package_name,scenario,analyzed_at,capture_duration_ms,
+ truncated_packet_count,analysis_warning_count,direction_metadata_available,handshake_observed,
+ tcp_present,quic_present,other_udp_present,tcp_rtt_available,quic_initial_rtt_available,
+ quic_spin_rtt_available,dns_metrics_available,comparison_ready,network_bytes_total,
+ ip_transport_header_bytes,observed_primary_payload_span_ms,average_network_throughput_mbps,
+ effective_file_throughput_mbps,total_transfer_amplification_ratio,
+ primary_direction_amplification_ratio,reverse_path_cost_ratio,ip_transport_header_overhead_ratio,
+ tcp_byte_share,quic_byte_share,other_udp_byte_share,tcp_connection_count,
+ tcp_handshake_success_rate,tcp_initial_rtt_avg_ms,tcp_initial_rtt_p50_ms,tcp_ack_rtt_p95_ms,
+ tcp_retransmission_count,tcp_retransmission_rate,tcp_recovery_tax,tcp_receiver_stall_ratio,
+ tcp_reset_rate)
+ ON TABLE public.network_analysis_results TO sahabino_bi_reader;
+
+DO $$ BEGIN
+ IF NOT has_column_privilege('sahabino_bi_reader','public.network_captures','id','SELECT') OR
+    NOT has_column_privilege('sahabino_bi_reader','public.network_analysis_results','capture_id','SELECT') OR
+    has_table_privilege('sahabino_bi_reader','public.network_captures','SELECT') OR
+    has_table_privilege('sahabino_bi_reader','public.network_analysis_results','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_captures','object_key','SELECT') OR
+    has_column_privilege('sahabino_bi_reader','public.network_analysis_results','analysis_warnings','SELECT') THEN
+   RAISE EXCEPTION 'post-grant network privilege audit failed; stop for DBA review';
+ END IF;
+END $$;
